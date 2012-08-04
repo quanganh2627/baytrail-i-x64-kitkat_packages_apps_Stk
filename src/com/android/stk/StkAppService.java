@@ -16,16 +16,25 @@
 
 package com.android.stk;
 
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ActivityManager.RunningTaskInfo;
 import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -33,6 +42,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.telephony.TelephonyManager;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -55,6 +65,7 @@ import com.android.internal.telephony.cat.CatResponseMessage;
 import com.android.internal.telephony.cat.TextMessage;
 
 import java.util.LinkedList;
+import java.util.List;
 
 /**
  * SIM toolkit application level service. Interacts with Telephopny messages,
@@ -76,6 +87,7 @@ public class StkAppService extends Service implements Runnable {
     private boolean responseNeeded = true;
     private boolean mCmdInProgress = false;
     private NotificationManager mNotificationManager = null;
+    private ActivityManager mActivityManager = null;
     private LinkedList<DelayedCmd> mCmdsQ = null;
     private boolean launchBrowser = false;
     private BrowserSettings mBrowserSettings = null;
@@ -118,6 +130,9 @@ public class StkAppService extends Service implements Runnable {
     static final int RES_ID_END_SESSION = 22;
     static final int RES_ID_EXIT = 23;
 
+    // Additional information (see 3GPP TS 11.14 for details)
+    static final int ADDITIONAL_INFO_SCREEN_BUSY = 1;
+
     static final int YES = 1;
     static final int NO = 0;
 
@@ -126,6 +141,9 @@ public class StkAppService extends Service implements Runnable {
                                         PACKAGE_NAME + ".StkMenuActivity";
     private static final String INPUT_ACTIVITY_NAME =
                                         PACKAGE_NAME + ".StkInputActivity";
+
+    private static final String SHOW_ALL_APPS = "com.android.launcher.SHOW_ALL_APPS";
+    private static final String CLOSE_ALL_APPS = "com.android.launcher.CLOSE_ALL_APPS";
 
     // Notification id used to display Idle Mode text in NotificationManager.
     private static final int STK_NOTIFICATION_ID = 333;
@@ -143,6 +161,21 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    // To pass 3GPP Conformance 51.010-4 27.22.4.1.1/2, when apps list is displayed
+    // in Home screen, it is considered as BUSY
+    private boolean mAllAppsShown = false;
+    private BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            CatLog.d(this, "got intent: " + intent);
+            String action = intent.getAction();
+            if (SHOW_ALL_APPS.equals(action)) {
+                mAllAppsShown = true;
+            } else if (CLOSE_ALL_APPS.equals(action)) {
+                mAllAppsShown = false;
+            }
+        }
+    };
+
     @Override
     public void onCreate() {
         // Initialize members
@@ -152,7 +185,14 @@ public class StkAppService extends Service implements Runnable {
         mContext = getBaseContext();
         mNotificationManager = (NotificationManager) mContext
                 .getSystemService(Context.NOTIFICATION_SERVICE);
+        mActivityManager = (ActivityManager) mContext
+                .getSystemService(Activity.ACTIVITY_SERVICE);
         sInstance = this;
+
+        final IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(SHOW_ALL_APPS);
+        intentFilter.addAction(CLOSE_ALL_APPS);
+        registerReceiver(mBroadcastReceiver, intentFilter);
     }
 
     @Override
@@ -203,6 +243,7 @@ public class StkAppService extends Service implements Runnable {
     public void onDestroy() {
         waitForLooper();
         mServiceLooper.quit();
+        unregisterReceiver(mBroadcastReceiver);
     }
 
     @Override
@@ -405,6 +446,46 @@ public class StkAppService extends Service implements Runnable {
             TextMessage msg = cmdMsg.geTextMessage();
             responseNeeded = msg.responseNeeded;
             waitForUsersResponse = msg.responseNeeded;
+            if (!msg.isHighPriority) {
+                List<RunningTaskInfo> tasks = mActivityManager.getRunningTasks(1);
+                if (tasks != null && tasks.size() > 0) {
+                    String packName = tasks.get(0).topActivity.getPackageName();
+                    boolean screenAvailable = false;
+                    if (packName.equals(PACKAGE_NAME)) {
+                        screenAvailable = true;
+                        CatLog.d(this, "stk on top");
+                    } else {
+                        PackageManager pm = getPackageManager();
+                        Intent homeIntent = new Intent(Intent.ACTION_MAIN, null);
+                        homeIntent.addCategory(Intent.CATEGORY_HOME);
+                        List<ResolveInfo> mApps;
+                        mApps = pm.queryIntentActivities(homeIntent, 0);
+
+                        for (ResolveInfo info : mApps) {
+                            ActivityInfo activity = info.activityInfo;
+                            if (activity.packageName.equals(packName)) {
+                                if (!mAllAppsShown) {
+                                    screenAvailable = true;
+                                    CatLog.d(this, "home on top");
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (!screenAvailable) {
+                        CatLog.d(this, "display text screen busy");
+                        waitForUsersResponse = false;
+                        CatResponseMessage resMsg =
+                                new CatResponseMessage(mCurrentCmd);
+                        resMsg.setResultCode(
+                                ResultCode.TERMINAL_CRNTLY_UNABLE_TO_PROCESS);
+                        resMsg.setAdditionalInfo(ADDITIONAL_INFO_SCREEN_BUSY);
+                        mStkService.onCmdResponse(resMsg);
+                        return;
+                    }
+                }
+            }
+
             if (lastSelectedItem != null) {
                 msg.title = lastSelectedItem;
             } else if (mMainCmd != null){
