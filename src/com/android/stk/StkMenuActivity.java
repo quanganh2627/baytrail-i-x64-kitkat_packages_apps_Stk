@@ -334,6 +334,7 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
             setListAdapter(adapter);
             // Set default item
             setSelection(mStkMenu.defaultItem);
+            adapter.setDefaultItem(mStkMenu.defaultItem);
         }
     }
 
