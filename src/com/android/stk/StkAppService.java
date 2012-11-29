@@ -35,12 +35,14 @@ import android.content.pm.ActivityInfo;
 import android.content.pm.ResolveInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.SystemProperties;
 import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.view.Gravity;
@@ -60,9 +62,14 @@ import com.android.internal.telephony.cat.Input;
 import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.CatCmdMessage;
 import com.android.internal.telephony.cat.CatCmdMessage.BrowserSettings;
+import com.android.internal.telephony.cat.CatEventMessage;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
+import com.android.internal.telephony.cat.ComprehensionTlvTag;
+import com.android.internal.telephony.cat.EventCode;
 import com.android.internal.telephony.cat.TextMessage;
+import com.android.internal.telephony.EncodeException;
+import com.android.internal.telephony.GsmAlphabet;
 
 import java.util.LinkedList;
 import java.util.List;
@@ -1010,5 +1017,26 @@ public class StkAppService extends Service implements Runnable {
             return true;
         }
         return false;
+    }
+
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (mStkService != null) {
+            String lang = SystemProperties.get("persist.sys.language");
+            if (lang != null && lang.length() == 2) {
+                try {
+                    byte[] additionalInfo = {
+                            (byte)ComprehensionTlvTag.LANGUAGE.value(),
+                            0x02, // Language length
+                            // Language Code - Pair of alpha-numeric characters
+                            GsmAlphabet.stringToGsm7BitPacked(lang.substring(0, 1))[1],
+                            GsmAlphabet.stringToGsm7BitPacked(lang.substring(1, 2))[1]};
+                    mStkService.onEventDownload(new CatEventMessage(
+                            EventCode.LANGUAGE_SELECTION.value(), additionalInfo, true));
+                } catch (EncodeException e) {
+                    CatLog.d(this, "Event Download Language selection Encode error "+ e);
+                }
+            }
+        }
     }
 }
