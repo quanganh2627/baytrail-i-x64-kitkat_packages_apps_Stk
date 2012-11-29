@@ -89,7 +89,8 @@
             </intent-filter>
         </receiver>
 
-        <service android:name="StkAppService" />
+        <service android:name="StkAppService"
+            android:configChanges="locale" />
 
 	</application>
 </manifest>
