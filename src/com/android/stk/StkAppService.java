@@ -70,6 +70,8 @@ import com.android.internal.telephony.cat.EventCode;
 import com.android.internal.telephony.cat.TextMessage;
 import com.android.internal.telephony.EncodeException;
 import com.android.internal.telephony.GsmAlphabet;
+import com.android.internal.telephony.IccCardConstants;
+import com.android.internal.telephony.TelephonyIntents;
 
 import java.util.LinkedList;
 import java.util.List;
@@ -179,6 +181,16 @@ public class StkAppService extends Service implements Runnable {
                 mAllAppsShown = true;
             } else if (CLOSE_ALL_APPS.equals(action)) {
                 mAllAppsShown = false;
+            } else if (TelephonyIntents.ACTION_SIM_STATE_CHANGED.equals(intent.getAction())) {
+                String stateExtra = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
+                if (stateExtra != null
+                        && IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(stateExtra)) {
+                    if (!removeMenu()) {
+                        mCurrentMenu = null;
+                    }
+                    handleSessionEnd();
+                    StkAppInstaller.unInstall(mContext);
+                }
             }
         }
     };
@@ -199,6 +211,7 @@ public class StkAppService extends Service implements Runnable {
         final IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(SHOW_ALL_APPS);
         intentFilter.addAction(CLOSE_ALL_APPS);
+        intentFilter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
         registerReceiver(mBroadcastReceiver, intentFilter);
     }
 
