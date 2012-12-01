@@ -19,7 +19,10 @@ package com.android.stk;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.ActivityManager.RunningTaskInfo;
+import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
+import android.app.IActivityManager;
+import android.app.IProcessObserver;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -40,6 +43,7 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.telephony.TelephonyManager;
 import android.util.Log;
@@ -94,11 +98,12 @@ public class StkAppService extends Service implements Runnable {
     private boolean responseNeeded = true;
     private boolean mCmdInProgress = false;
     private NotificationManager mNotificationManager = null;
-    private ActivityManager mActivityManager = null;
     private LinkedList<DelayedCmd> mCmdsQ = null;
     private boolean launchBrowser = false;
     private BrowserSettings mBrowserSettings = null;
     static StkAppService sInstance = null;
+
+    private IActivityManager mActivityManager;
 
     // Used for setting FLAG_ACTIVITY_NO_USER_ACTION when
     // creating an intent.
@@ -168,6 +173,28 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private IProcessObserver mProcessObserver = new IProcessObserver.Stub() {
+        @Override
+        public void onForegroundActivitiesChanged(int pid,
+                int uid, boolean foregroundActivities) {
+            if (foregroundActivities) {
+                String appName = mContext.getPackageManager().getNameForUid(uid);
+                if (!mAllAppsShown
+                        && appName != null && appName.contains("com.android.launcher")) {
+                    updateIdleScreenAvailable();
+                }
+            }
+        }
+
+        @Override
+        public void onImportanceChanged(int pid, int uid, int importance) {
+        }
+
+        @Override
+        public void onProcessDied(int pid, int uid) {
+        }
+    };
+
     // To pass 3GPP Conformance 51.010-4 27.22.4.1.1/2, when apps list is displayed
     // in Home screen, it is considered as BUSY
     private boolean mAllAppsShown = false;
@@ -179,10 +206,17 @@ public class StkAppService extends Service implements Runnable {
                 mAllAppsShown = true;
             } else if (CLOSE_ALL_APPS.equals(action)) {
                 mAllAppsShown = false;
+                updateIdleScreenAvailable();
             } else if (TelephonyIntents.ACTION_SIM_STATE_CHANGED.equals(intent.getAction())) {
                 String stateExtra = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
                 if (stateExtra != null
                         && IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(stateExtra)) {
+                    try {
+                        mActivityManager.unregisterProcessObserver(mProcessObserver);
+                    } catch (RemoteException e) {
+                        CatLog.d(this, "Error unregistering ProcessObserver");
+                    }
+
                     if (!removeMenu()) {
                         mCurrentMenu = null;
                     }
@@ -207,8 +241,6 @@ public class StkAppService extends Service implements Runnable {
         mContext = getBaseContext();
         mNotificationManager = (NotificationManager) mContext
                 .getSystemService(Context.NOTIFICATION_SERVICE);
-        mActivityManager = (ActivityManager) mContext
-                .getSystemService(Activity.ACTIVITY_SERVICE);
         sInstance = this;
 
         final IntentFilter intentFilter = new IntentFilter();
@@ -216,6 +248,8 @@ public class StkAppService extends Service implements Runnable {
         intentFilter.addAction(CLOSE_ALL_APPS);
         intentFilter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
         registerReceiver(mBroadcastReceiver, intentFilter);
+
+        mActivityManager = ActivityManagerNative.getDefault();
     }
 
     @Override
@@ -258,6 +292,7 @@ public class StkAppService extends Service implements Runnable {
         waitForLooper();
         mServiceLooper.quit();
         unregisterReceiver(mBroadcastReceiver);
+        unregisterProcessObserverIfNotNeeded();
     }
 
     @Override
@@ -387,6 +422,7 @@ public class StkAppService extends Service implements Runnable {
         case CLOSE_CHANNEL:
         case RECEIVE_DATA:
         case SEND_DATA:
+        case SET_UP_EVENT_LIST:
             return false;
         }
 
@@ -451,42 +487,16 @@ public class StkAppService extends Service implements Runnable {
             responseNeeded = msg.responseNeeded;
             waitForUsersResponse = msg.responseNeeded;
             if (!msg.isHighPriority) {
-                List<RunningTaskInfo> tasks = mActivityManager.getRunningTasks(1);
-                if (tasks != null && tasks.size() > 0) {
-                    String packName = tasks.get(0).topActivity.getPackageName();
-                    boolean screenAvailable = false;
-                    if (packName.equals(PACKAGE_NAME)) {
-                        screenAvailable = true;
-                        CatLog.d(this, "stk on top");
-                    } else {
-                        PackageManager pm = getPackageManager();
-                        Intent homeIntent = new Intent(Intent.ACTION_MAIN, null);
-                        homeIntent.addCategory(Intent.CATEGORY_HOME);
-                        List<ResolveInfo> mApps;
-                        mApps = pm.queryIntentActivities(homeIntent, 0);
-
-                        for (ResolveInfo info : mApps) {
-                            ActivityInfo activity = info.activityInfo;
-                            if (activity.packageName.equals(packName)) {
-                                if (!mAllAppsShown) {
-                                    screenAvailable = true;
-                                    CatLog.d(this, "home on top");
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    if (!screenAvailable) {
-                        CatLog.d(this, "display text screen busy");
-                        waitForUsersResponse = false;
-                        CatResponseMessage resMsg =
-                                new CatResponseMessage(mCurrentCmd);
-                        resMsg.setResultCode(
-                                ResultCode.TERMINAL_CRNTLY_UNABLE_TO_PROCESS);
-                        resMsg.setAdditionalInfo(ADDITIONAL_INFO_SCREEN_BUSY);
-                        mStkService.onCmdResponse(resMsg);
-                        return;
-                    }
+                if (!isScreenAvailable()) {
+                    waitForUsersResponse = false;
+                    CatLog.d(this, "display text screen busy");
+                    CatResponseMessage resMsg =
+                            new CatResponseMessage(mCurrentCmd);
+                    resMsg.setResultCode(
+                            ResultCode.TERMINAL_CRNTLY_UNABLE_TO_PROCESS);
+                    resMsg.setAdditionalInfo(ADDITIONAL_INFO_SCREEN_BUSY);
+                    mStkService.onCmdResponse(resMsg);
+                    return;
                 }
             }
 
@@ -565,6 +575,10 @@ public class StkAppService extends Service implements Runnable {
                 }
             }
             launchTransientEventMessage();
+            break;
+        case SET_UP_EVENT_LIST:
+            waitForUsersResponse = false;
+            processSetupEventList();
             break;
         }
 
@@ -1069,5 +1083,98 @@ public class StkAppService extends Service implements Runnable {
                 }
             }
         }
+    }
+
+    private boolean isScreenAvailable() {
+        ActivityManager am = (ActivityManager)mContext
+                .getSystemService(Activity.ACTIVITY_SERVICE);
+        boolean screenAvailable = false;
+
+        if (am == null) {
+            return screenAvailable;
+        }
+
+        List<RunningTaskInfo> tasks = am.getRunningTasks(1);
+        if (tasks != null && tasks.size() > 0) {
+            String packName = tasks.get(0).topActivity.getPackageName();
+            if (packName.equals(PACKAGE_NAME)) {
+                screenAvailable = true;
+                CatLog.d(this, "stk on top");
+            } else {
+                PackageManager pm = getPackageManager();
+                Intent homeIntent = new Intent(Intent.ACTION_MAIN, null);
+                homeIntent.addCategory(Intent.CATEGORY_HOME);
+                List<ResolveInfo> mApps;
+                mApps = pm.queryIntentActivities(homeIntent, 0);
+
+                for (ResolveInfo info : mApps) {
+                    ActivityInfo activity = info.activityInfo;
+                    if (activity.packageName.equals(packName)) {
+                        if (!mAllAppsShown) {
+                            screenAvailable = true;
+                            CatLog.d(this, "home on top");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        return screenAvailable;
+    }
+
+    private void processSetupEventList() {
+        boolean registerProcessObserver;
+
+        if (mStkService != null) {
+            registerProcessObserver = false;
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+                registerProcessObserver = true;
+            }
+        } else {
+            registerProcessObserver = false;
+        }
+
+        try {
+            if (registerProcessObserver) {
+                mActivityManager.registerProcessObserver(mProcessObserver);
+            } else {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+            }
+        } catch (RemoteException e) {
+            CatLog.d(this, "Error registering/unregistering ProcessObserver");
+        }
+    }
+
+    private void unregisterProcessObserverIfNotNeeded() {
+        boolean unregisterProcessObserver;
+        if (mStkService != null) {
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+                unregisterProcessObserver = false;
+            } else {
+                unregisterProcessObserver = true;
+            }
+        } else {
+            unregisterProcessObserver = true;
+        }
+
+        if (unregisterProcessObserver) {
+            try {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+            } catch (RemoteException e) {
+                CatLog.d(this, "Error unregistering ProcessObserver");
+            }
+        }
+    }
+
+    private void updateIdleScreenAvailable() {
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.IDLE_SCREEN_AVAILABLE.value(),
+                    com.android.internal.telephony.cat.CatService.DEV_ID_DISPLAY,
+                    com.android.internal.telephony.cat.CatService.DEV_ID_UICC, null, true));
+        }
+
+        unregisterProcessObserverIfNotNeeded();
     }
 }
