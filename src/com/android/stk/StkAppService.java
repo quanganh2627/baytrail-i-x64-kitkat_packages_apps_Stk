@@ -131,6 +131,7 @@ public class StkAppService extends Service implements Runnable {
     static final int OP_END_SESSION = 4;
     static final int OP_BOOT_COMPLETED = 5;
     private static final int OP_DELAYED_MSG = 6;
+    static final int OP_USER_ACTIVITY = 7;
 
     // Response ids
     static final int RES_ID_MENU_SELECTION = 11;
@@ -286,6 +287,7 @@ public class StkAppService extends Service implements Runnable {
         case OP_LAUNCH_APP:
         case OP_END_SESSION:
         case OP_BOOT_COMPLETED:
+        case OP_USER_ACTIVITY:
             break;
         default:
             return;
@@ -412,6 +414,10 @@ public class StkAppService extends Service implements Runnable {
                 break;
             case OP_DELAYED_MSG:
                 handleDelayedCmd();
+                break;
+            case OP_USER_ACTIVITY:
+                CatLog.d(this, "OP_USER_ACTIVITY");
+                updateUserActivityAvailable();
                 break;
             }
         }
@@ -1098,6 +1104,10 @@ public class StkAppService extends Service implements Runnable {
 
         if (mStkService != null) {
             registerProcessObserver = false;
+            if (mStkService.isEventDownloadActive(EventCode.USER_ACTIVITY.value())) {
+                registerForUserActivityIfNeeded(true);
+            }
+
             if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
                 registerProcessObserver = true;
             }
@@ -1146,5 +1156,19 @@ public class StkAppService extends Service implements Runnable {
         }
 
         unregisterProcessObserverIfNotNeeded();
+    }
+
+    private void updateUserActivityAvailable() {
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.USER_ACTIVITY.value(), null, true));
+            registerForUserActivityIfNeeded(false);
+        }
+    }
+
+    private void registerForUserActivityIfNeeded(boolean status) {
+        Intent launcherIntent = new Intent(AppInterface.CHECK_USER_ACTIVITY_ACTION);
+        launcherIntent.putExtra("STK_USER_ACTIVITY_REQUEST", status);
+        sendBroadcast(launcherIntent);
     }
 }
