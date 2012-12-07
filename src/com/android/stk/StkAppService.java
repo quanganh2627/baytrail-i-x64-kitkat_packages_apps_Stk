@@ -178,11 +178,18 @@ public class StkAppService extends Service implements Runnable {
         @Override
         public void onForegroundActivitiesChanged(int pid,
                 int uid, boolean foregroundActivities) {
+            String appName = mContext.getPackageManager().getNameForUid(uid);
             if (foregroundActivities) {
-                String appName = mContext.getPackageManager().getNameForUid(uid);
                 if (!mAllAppsShown
                         && appName != null && appName.contains("com.android.launcher")) {
                     updateIdleScreenAvailable();
+                }
+            } else {
+                // The browser app must be present in the system as com.android.browser
+                // and this works only with the Android default browser package.
+                // Note: Needs to be modified to work with other browsers.
+                if (appName.contains("com.android.browser")) {
+                    sendBrowserTerminationEvent();
                 }
             }
         }
@@ -1198,5 +1205,19 @@ public class StkAppService extends Service implements Runnable {
         Intent launcherIntent = new Intent(AppInterface.CHECK_USER_ACTIVITY_ACTION);
         launcherIntent.putExtra("STK_USER_ACTIVITY_REQUEST", status);
         sendBroadcast(launcherIntent);
+    }
+
+    private void sendBrowserTerminationEvent() {
+        if (mStkService != null) {
+            byte[] additionalInfo = {
+                    (byte)ComprehensionTlvTag.BROWSER_TERMINATION_CAUSE.value(),
+                    0x01, // length
+                    0x00 // user termination
+                    };
+
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.BROWSER_TERMINATION.value(),
+                    additionalInfo, true));
+        }
     }
 }
