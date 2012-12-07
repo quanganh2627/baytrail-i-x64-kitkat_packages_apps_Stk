@@ -571,7 +571,7 @@ public class StkAppService extends Service implements Runnable {
             launchToneDialog();
             break;
         case OPEN_CHANNEL:
-            launchOpenChannelDialog();
+            launchConfirmationDialog(mCurrentCmd.geTextMessage());
             break;
         case CLOSE_CHANNEL:
         case RECEIVE_DATA:
@@ -696,6 +696,11 @@ public class StkAppService extends Service implements Runnable {
                 if (confirmed) {
                     launchCallMsg();
                 }
+                break;
+            case OPEN_CHANNEL:
+                resMsg.setResultCode(
+                        confirmed ? ResultCode.OK : ResultCode.USER_NOT_ACCEPT);
+                resMsg.setConfirmation(confirmed);
                 break;
             }
             break;
