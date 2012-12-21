@@ -34,7 +34,7 @@ public class NfcBroadcastReceiver extends BroadcastReceiver {
             AppInterface catService = com.android.internal.telephony.cat.CatService.getInstance();
             if (catService != null) {
                 catService.onEventDownload(
-                        new CatEventMessage(EventCode.HCI_CONNECTIVITY_EVENT.value(), null, true));
+                    new CatEventMessage(EventCode.HCI_CONNECTIVITY_EVENT.value(), null, false));
                 CatLog.d(this, "Event Download - HCI Connectivty sent to the UICC" );
             } else {
                 CatLog.d(this, "Error: CatService getInstance returned null" );
