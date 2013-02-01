@@ -360,15 +360,6 @@ public class StkAppService extends Service implements Runnable {
         public void handleMessage(Message msg) {
             int opcode = msg.arg1;
 
-            if (mStkService == null) {
-                mStkService = com.android.internal.telephony.cat.CatService.getInstance();
-                if (mStkService == null) {
-                    // This should never happen (we should be responding only to a message
-                    // that arrived from StkService). It has to exist by this time
-                    throw new RuntimeException("mStkService is null in ServiceHandler");
-                }
-            }
-
             switch (opcode) {
             case OP_LAUNCH_APP:
                 if (mMainCmd == null) {
@@ -620,6 +611,14 @@ public class StkAppService extends Service implements Runnable {
     private void handleCmdResponse(Bundle args) {
         if (mCurrentCmd == null) {
             return;
+        }
+        if (mStkService == null) {
+            mStkService = com.android.internal.telephony.cat.CatService.getInstance();
+            if (mStkService == null) {
+                // This should never happen (we should be responding only to a message
+                // that arrived from StkService). It has to exist by this time
+                throw new RuntimeException("mStkService is null when we need to send response");
+            }
         }
 
         CatResponseMessage resMsg = new CatResponseMessage(mCurrentCmd);
@@ -1243,11 +1242,8 @@ public class StkAppService extends Service implements Runnable {
     }
 
     private void updateUserActivityAvailable() {
-        if (mStkService != null) {
-            mStkService.onEventDownload(new CatEventMessage(
-                    EventCode.USER_ACTIVITY.value(), null, true));
-        }
-
+        mStkService.onEventDownload(new CatEventMessage(
+                EventCode.USER_ACTIVITY.value(), null, true));
         registerForUserActivityIfNeeded(false);
     }
 
