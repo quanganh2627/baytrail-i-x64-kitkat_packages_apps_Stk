@@ -500,6 +500,14 @@ public class StkAppService extends Service implements Runnable {
         CatLog.d(this, cmdMsg.getCmdType().name());
         switch (cmdMsg.getCmdType()) {
         case DISPLAY_TEXT:
+            if (mStkService == null) {
+                mStkService = com.android.internal.telephony.cat.CatService.getInstance();
+                if (mStkService == null) {
+                    // If StkService is not yet available, simply returns.
+                    return;
+                }
+            }
+
             TextMessage msg = cmdMsg.geTextMessage();
             responseNeeded = msg.responseNeeded;
             waitForUsersResponse = msg.responseNeeded;
@@ -1242,9 +1250,11 @@ public class StkAppService extends Service implements Runnable {
     }
 
     private void updateUserActivityAvailable() {
-        mStkService.onEventDownload(new CatEventMessage(
-                EventCode.USER_ACTIVITY.value(), null, true));
-        registerForUserActivityIfNeeded(false);
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.USER_ACTIVITY.value(), null, true));
+            registerForUserActivityIfNeeded(false);
+        }
     }
 
     private void registerForUserActivityIfNeeded(boolean status) {
