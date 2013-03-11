@@ -257,12 +257,8 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
 
     private void startTimeOut() {
         cancelTimeOut();
-        int dialogDuration = StkApp.calculateDurationInMilis(mStkInput.duration);
-        if (dialogDuration == 0) {
-            dialogDuration = StkApp.UI_TIMEOUT;
-        }
         mTimeoutHandler.sendMessageDelayed(mTimeoutHandler
-                .obtainMessage(MSG_ID_TIMEOUT), dialogDuration);
+                .obtainMessage(MSG_ID_TIMEOUT), StkApp.UI_TIMEOUT);
     }
 
     private void configInputDisplay() {
