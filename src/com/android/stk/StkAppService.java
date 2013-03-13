@@ -193,7 +193,12 @@ public class StkAppService extends Service implements Runnable {
                 // and this works only with the Android default browser package.
                 // Note: Needs to be modified to work with other browsers.
                 if (appName.contains("com.android.browser")) {
-                    sendBrowserTerminationEvent();
+                    if (mStkService != null) {
+                        if (mStkService.isEventDownloadActive(
+                                EventCode.BROWSER_TERMINATION.value())) {
+                            sendBrowserTerminationEvent();
+                        }
+                    }
                 }
             }
         }
@@ -1205,6 +1210,10 @@ public class StkAppService extends Service implements Runnable {
             if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
                 registerProcessObserver = true;
             }
+
+            if (mStkService.isEventDownloadActive(EventCode.BROWSER_TERMINATION.value())) {
+                registerProcessObserver = true;
+            }
         } else {
             registerProcessObserver = false;
         }
@@ -1223,7 +1232,9 @@ public class StkAppService extends Service implements Runnable {
     private void unregisterProcessObserverIfNotNeeded() {
         boolean unregisterProcessObserver;
         if (mStkService != null) {
-            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())
+                    || mStkService.isEventDownloadActive(
+                            EventCode.BROWSER_TERMINATION.value())) {
                 unregisterProcessObserver = false;
             } else {
                 unregisterProcessObserver = true;
@@ -1276,7 +1287,7 @@ public class StkAppService extends Service implements Runnable {
 
             mStkService.onEventDownload(new CatEventMessage(
                     EventCode.BROWSER_TERMINATION.value(),
-                    additionalInfo, true));
+                    additionalInfo, false));
         }
     }
 }
