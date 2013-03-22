@@ -990,6 +990,7 @@ public class StkAppService extends Service implements Runnable {
                         contentView.setTextViewText(com.android.internal.R.id.text, msg.text);
                     }
                     if (msg.icon != null) {
+                        notificationBuilder.setLargeIcon(msg.icon);
                         contentView.setImageViewBitmap(com.android.internal.R.id.icon, msg.icon);
                     } else {
                         contentView.setImageViewResource(
