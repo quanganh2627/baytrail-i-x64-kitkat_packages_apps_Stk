@@ -193,7 +193,12 @@ public class StkAppService extends Service implements Runnable {
                 // and this works only with the Android default browser package.
                 // Note: Needs to be modified to work with other browsers.
                 if (appName.contains("com.android.browser")) {
-                    sendBrowserTerminationEvent();
+                    if (mStkService != null) {
+                        if (mStkService.isEventDownloadActive(
+                                EventCode.BROWSER_TERMINATION.value())) {
+                            sendBrowserTerminationEvent();
+                        }
+                    }
                 }
             }
         }
@@ -883,7 +888,7 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
 
-        Intent intent = new Intent(Intent.ACTION_VIEW);
+        Intent intent = new Intent();
         intent.setClassName("com.android.browser", "com.android.browser.BrowserActivity");
         intent.addCategory(Intent.CATEGORY_LAUNCHER);
 
@@ -898,15 +903,17 @@ public class StkAppService extends Service implements Runnable {
                 CatLog.d(this, "modifiedUrl = " + modifiedUrl);
                 data = Uri.parse(modifiedUrl);
             }
+            intent.setData(data);
         }
-        intent.setData(data);
 
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         switch (settings.mode) {
         case USE_EXISTING_BROWSER:
+            intent.setAction(Intent.ACTION_VIEW);
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
             break;
         case LAUNCH_NEW_BROWSER:
+            intent.setAction(Intent.ACTION_VIEW);
             intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
             break;
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
@@ -1203,6 +1210,10 @@ public class StkAppService extends Service implements Runnable {
             if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
                 registerProcessObserver = true;
             }
+
+            if (mStkService.isEventDownloadActive(EventCode.BROWSER_TERMINATION.value())) {
+                registerProcessObserver = true;
+            }
         } else {
             registerProcessObserver = false;
         }
@@ -1221,7 +1232,9 @@ public class StkAppService extends Service implements Runnable {
     private void unregisterProcessObserverIfNotNeeded() {
         boolean unregisterProcessObserver;
         if (mStkService != null) {
-            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())
+                    || mStkService.isEventDownloadActive(
+                            EventCode.BROWSER_TERMINATION.value())) {
                 unregisterProcessObserver = false;
             } else {
                 unregisterProcessObserver = true;
@@ -1274,7 +1287,7 @@ public class StkAppService extends Service implements Runnable {
 
             mStkService.onEventDownload(new CatEventMessage(
                     EventCode.BROWSER_TERMINATION.value(),
-                    additionalInfo, true));
+                    additionalInfo, false));
         }
     }
 }
