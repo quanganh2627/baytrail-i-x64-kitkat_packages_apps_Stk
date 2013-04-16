@@ -88,7 +88,7 @@
 
         <receiver android:name="com.android.stk.BootCompletedReceiver"
                     androidprv:primaryUserOnly="true">
-            <intent-filter>
+            <intent-filter  android:priority="10">
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
