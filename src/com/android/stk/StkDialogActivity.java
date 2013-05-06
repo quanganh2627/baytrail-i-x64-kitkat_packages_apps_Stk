@@ -126,14 +126,15 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
     @Override
     public void onResume() {
         super.onResume();
-        startTimeOut(mTextMsg.userClear);
+
+        if (!mTimeoutHandler.hasMessages(MSG_ID_TIMEOUT)) {
+            startTimeOut(mTextMsg.userClear);
+        }
     }
 
     @Override
     public void onPause() {
         super.onPause();
-
-        cancelTimeOut();
     }
 
     @Override
@@ -151,6 +152,7 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
     }
 
     private void sendResponse(int resId, boolean confirmed) {
+        cancelTimeOut();
         Bundle args = new Bundle();
         args.putInt(StkAppService.OPCODE, StkAppService.OP_RESPONSE);
         args.putInt(StkAppService.RES_ID, resId);
