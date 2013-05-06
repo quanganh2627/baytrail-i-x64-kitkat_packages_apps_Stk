@@ -160,14 +160,14 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
     public void onResume() {
         super.onResume();
 
-        startTimeOut();
+        if (!mTimeoutHandler.hasMessages(MSG_ID_TIMEOUT)) {
+            startTimeOut();
+        }
     }
 
     @Override
     public void onPause() {
         super.onPause();
-
-        cancelTimeOut();
     }
 
     @Override
@@ -186,6 +186,8 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
     }
 
     private void sendResponse(int resId, String input, boolean help) {
+        cancelTimeOut();
+
         Bundle args = new Bundle();
         args.putInt(StkAppService.OPCODE, StkAppService.OP_RESPONSE);
         args.putInt(StkAppService.RES_ID, resId);

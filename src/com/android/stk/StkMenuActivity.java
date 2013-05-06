@@ -170,7 +170,6 @@ public class StkMenuActivity extends ListActivity {
         super.onPause();
 
         appService.indicateMenuVisibility(false);
-        cancelTimeOut();
     }
 
     @Override
@@ -251,7 +250,8 @@ public class StkMenuActivity extends ListActivity {
     }
 
     private void startTimeOut() {
-        if (mState == STATE_SECONDARY) {
+        if (mState == STATE_SECONDARY
+            && !mTimeoutHandler.hasMessages(MSG_ID_TIMEOUT)) {
             // Reset timeout.
             cancelTimeOut();
             mTimeoutHandler.sendMessageDelayed(mTimeoutHandler
@@ -322,6 +322,8 @@ public class StkMenuActivity extends ListActivity {
     }
 
     private void sendResponse(int resId, int itemId, boolean help) {
+        cancelTimeOut();
+
         Bundle args = new Bundle();
         args.putInt(StkAppService.OPCODE, StkAppService.OP_RESPONSE);
         args.putInt(StkAppService.RES_ID, resId);
