@@ -502,15 +502,17 @@ public class StkAppService extends Service implements Runnable {
         mCurrentCmd = cmdMsg;
         boolean waitForUsersResponse = true;
 
+        // Retrieve the CatService instance if not yet done
+        if (mStkService == null) {
+            mStkService = com.android.internal.telephony.cat.CatService.getInstance();
+        }
+
         CatLog.d(this, cmdMsg.getCmdType().name());
         switch (cmdMsg.getCmdType()) {
         case DISPLAY_TEXT:
             if (mStkService == null) {
-                mStkService = com.android.internal.telephony.cat.CatService.getInstance();
-                if (mStkService == null) {
-                    // If StkService is not yet available, simply returns.
-                    return;
-                }
+                // If StkService is not yet available, simply returns.
+                return;
             }
 
             TextMessage msg = cmdMsg.geTextMessage();
