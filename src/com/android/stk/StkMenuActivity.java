@@ -176,7 +176,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         super.onPause();
 
         appService.indicateMenuVisibility(false);
-        cancelTimeOut();
     }
 
     @Override
@@ -298,7 +297,8 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
     }
 
     private void startTimeOut() {
-        if (mState == STATE_SECONDARY) {
+        if (mState == STATE_SECONDARY
+            && !mTimeoutHandler.hasMessages(MSG_ID_TIMEOUT)) {
             // Reset timeout.
             cancelTimeOut();
             mTimeoutHandler.sendMessageDelayed(mTimeoutHandler
@@ -370,6 +370,8 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
     }
 
     private void sendResponse(int resId, int itemId, boolean help) {
+        cancelTimeOut();
+
         Bundle args = new Bundle();
         args.putInt(StkAppService.OPCODE, StkAppService.OP_RESPONSE);
         args.putInt(StkAppService.RES_ID, resId);
