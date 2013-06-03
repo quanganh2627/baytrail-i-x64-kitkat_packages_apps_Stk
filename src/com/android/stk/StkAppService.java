@@ -890,10 +890,6 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
 
-        Intent intent = new Intent();
-        intent.setClassName("com.android.browser", "com.android.browser.BrowserActivity");
-        intent.addCategory(Intent.CATEGORY_LAUNCHER);
-
         // to launch home page, make sure that data Uri is null.
         Uri data = null;
         if (settings.url != null) {
@@ -905,17 +901,18 @@ public class StkAppService extends Service implements Runnable {
                 CatLog.d(this, "modifiedUrl = " + modifiedUrl);
                 data = Uri.parse(modifiedUrl);
             }
-            intent.setData(data);
         }
 
+        Intent intent = new Intent(Intent.ACTION_VIEW, data);
+        intent.setClassName("com.android.browser", "com.android.browser.BrowserActivity");
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
         switch (settings.mode) {
         case USE_EXISTING_BROWSER:
-            intent.setAction(Intent.ACTION_VIEW);
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
             break;
         case LAUNCH_NEW_BROWSER:
-            intent.setAction(Intent.ACTION_VIEW);
             intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
             break;
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
