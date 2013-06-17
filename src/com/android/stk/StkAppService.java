@@ -102,7 +102,7 @@ public class StkAppService extends Service implements Runnable {
     private boolean mCmdInProgress = false;
     private NotificationManager mNotificationManager = null;
     private LinkedList<DelayedCmd> mCmdsQ = null;
-    private boolean launchBrowser = false;
+    private boolean mLaunchBrowser = false;
     private BrowserSettings mBrowserSettings = null;
     static StkAppService sInstance = null;
 
@@ -488,8 +488,8 @@ public class StkAppService extends Service implements Runnable {
             mCmdInProgress = false;
         }
         // In case a launch browser command was just confirmed, launch that url.
-        if (launchBrowser) {
-            launchBrowser = false;
+        if (mLaunchBrowser) {
+            mLaunchBrowser = false;
             launchBrowser(mBrowserSettings);
         }
     }
@@ -684,6 +684,10 @@ public class StkAppService extends Service implements Runnable {
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
                 break;
             case LAUNCH_BROWSER:
+                if (confirmed) {
+                    mLaunchBrowser = true;
+                    mBrowserSettings = mCurrentCmd.getBrowserSettings();
+                }
                 /* If the proactive command "Launch browser: if not already
                  * launched" is received and the browser is already launched
                  * then the result code LAUNCH_BROWSER_ERROR and additional
@@ -696,13 +700,10 @@ public class StkAppService extends Service implements Runnable {
                     resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
                     resMsg.setAdditionalInfo(STK_BROWSER_UNAVAILABLE);
                     CatLog.d(this, "LAUNCH_BROWSER_ERROR - BROWSER UNAVAILABLE");
+                    mLaunchBrowser = false;
                 } else {
                     resMsg.setResultCode(confirmed ? ResultCode.OK
                             : ResultCode.UICC_SESSION_TERM_BY_USER);
-                }
-                if (confirmed) {
-                    launchBrowser = true;
-                    mBrowserSettings = mCurrentCmd.getBrowserSettings();
                 }
                 break;
             case SET_UP_CALL:
