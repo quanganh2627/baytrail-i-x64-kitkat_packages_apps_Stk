@@ -342,6 +342,9 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
 
         if (intent != null) {
             mState = intent.getIntExtra("STATE", STATE_MAIN);
+            if (mState == STATE_MAIN) {
+                cancelTimeOut();
+            }
         } else {
             finish();
         }
