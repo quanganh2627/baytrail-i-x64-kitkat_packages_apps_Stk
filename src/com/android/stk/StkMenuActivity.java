@@ -16,6 +16,7 @@
 
 package com.android.stk;
 
+import android.app.ActionBar;
 import android.app.ListActivity;
 import android.content.Context;
 import android.content.Intent;
@@ -81,10 +82,12 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         super.onCreate(icicle);
 
         CatLog.d(this, "onCreate");
-        // Remove the default title, customized one is used.
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
         // Set the layout for this activity.
         setContentView(R.layout.stk_menu_list);
+
+        // Hide default title and icon, customized one is used
+        getActionBar().setDisplayShowTitleEnabled(false);
+        getActionBar().setDisplayShowHomeEnabled(false);
 
         mTitleTextView = (TextView) findViewById(R.id.title_text);
         mTitleIconView = (ImageView) findViewById(R.id.title_icon);
@@ -104,6 +107,7 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         CatLog.d(this, "onNewIntent");
         initFromIntent(intent);
         mAcceptUsersInput = true;
+        invalidateOptionsMenu();
     }
 
     @Override
