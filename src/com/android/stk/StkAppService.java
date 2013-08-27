@@ -16,21 +16,40 @@
 
 package com.android.stk;
 
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ActivityManager.RunningTaskInfo;
+import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
+import android.app.IActivityManager;
+import android.app.IProcessObserver;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.content.IntentFilter;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.RemoteException;
+import android.os.SystemProperties;
 import android.telephony.TelephonyManager;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -48,11 +67,21 @@ import com.android.internal.telephony.cat.Input;
 import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.CatCmdMessage;
 import com.android.internal.telephony.cat.CatCmdMessage.BrowserSettings;
+import com.android.internal.telephony.cat.CatEventMessage;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
+import com.android.internal.telephony.cat.ComprehensionTlvTag;
+import com.android.internal.telephony.cat.EventCode;
+import com.android.internal.telephony.cat.LaunchBrowserMode;
 import com.android.internal.telephony.cat.TextMessage;
+import com.android.internal.telephony.EncodeException;
+import com.android.internal.telephony.GsmAlphabet;
+import com.android.internal.telephony.IccCardConstants;
+import com.android.internal.telephony.TelephonyIntents;
 
+import java.util.Iterator;
 import java.util.LinkedList;
+import java.util.List;
 
 /**
  * SIM toolkit application level service. Interacts with Telephopny messages,
@@ -75,9 +104,11 @@ public class StkAppService extends Service implements Runnable {
     private boolean mCmdInProgress = false;
     private NotificationManager mNotificationManager = null;
     private LinkedList<DelayedCmd> mCmdsQ = null;
-    private boolean launchBrowser = false;
+    private boolean mLaunchBrowser = false;
     private BrowserSettings mBrowserSettings = null;
     static StkAppService sInstance = null;
+
+    private IActivityManager mActivityManager;
 
     // Used for setting FLAG_ACTIVITY_NO_USER_ACTION when
     // creating an intent.
@@ -103,6 +134,7 @@ public class StkAppService extends Service implements Runnable {
     static final int OP_END_SESSION = 4;
     static final int OP_BOOT_COMPLETED = 5;
     private static final int OP_DELAYED_MSG = 6;
+    static final int OP_USER_ACTIVITY = 7;
 
     // Response ids
     static final int RES_ID_MENU_SELECTION = 11;
@@ -116,6 +148,10 @@ public class StkAppService extends Service implements Runnable {
     static final int RES_ID_END_SESSION = 22;
     static final int RES_ID_EXIT = 23;
 
+    // Additional information (see 3GPP TS 11.14 for details)
+    static final int ADDITIONAL_INFO_SCREEN_BUSY = 1;
+    static final int STK_BROWSER_UNAVAILABLE = 0x02;
+
     static final int YES = 1;
     static final int NO = 0;
 
@@ -124,6 +160,9 @@ public class StkAppService extends Service implements Runnable {
                                         PACKAGE_NAME + ".StkMenuActivity";
     private static final String INPUT_ACTIVITY_NAME =
                                         PACKAGE_NAME + ".StkInputActivity";
+
+    private static final String SHOW_ALL_APPS = "com.android.launcher.SHOW_ALL_APPS";
+    private static final String CLOSE_ALL_APPS = "com.android.launcher.CLOSE_ALL_APPS";
 
     // Notification id used to display Idle Mode text in NotificationManager.
     private static final int STK_NOTIFICATION_ID = 333;
@@ -141,14 +180,75 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private IProcessObserver mProcessObserver = new IProcessObserver.Stub() {
+        @Override
+        public void onForegroundActivitiesChanged(int pid,
+                int uid, boolean foregroundActivities) {
+            String appName = mContext.getPackageManager().getNameForUid(uid);
+            if (foregroundActivities) {
+                if (!mAllAppsShown
+                        && appName != null && appName.contains("com.android.launcher")) {
+                    updateIdleScreenAvailable();
+                }
+            } else {
+                // The browser app must be present in the system as com.android.browser
+                // and this works only with the Android default browser package.
+                // Note: Needs to be modified to work with other browsers.
+                if (appName.contains("com.android.browser")) {
+                    if (mStkService != null) {
+                        if (mStkService.isEventDownloadActive(
+                                EventCode.BROWSER_TERMINATION.value())) {
+                            sendBrowserTerminationEvent();
+                        }
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void onImportanceChanged(int pid, int uid, int importance) {
+        }
+
+        @Override
+        public void onProcessDied(int pid, int uid) {
+        }
+    };
+
+    // To pass 3GPP Conformance 51.010-4 27.22.4.1.1/2, when apps list is displayed
+    // in Home screen, it is considered as BUSY
+    private boolean mAllAppsShown = false;
+    private BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            CatLog.d(this, "got intent: " + intent);
+            String action = intent.getAction();
+            if (SHOW_ALL_APPS.equals(action)) {
+                mAllAppsShown = true;
+            } else if (CLOSE_ALL_APPS.equals(action)) {
+                mAllAppsShown = false;
+                updateIdleScreenAvailable();
+            } else if (TelephonyIntents.ACTION_SIM_STATE_CHANGED.equals(intent.getAction())) {
+                String stateExtra = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
+                if (stateExtra != null
+                        && IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(stateExtra)) {
+                    try {
+                        mActivityManager.unregisterProcessObserver(mProcessObserver);
+                    } catch (RemoteException e) {
+                        CatLog.d(this, "Error unregistering ProcessObserver");
+                    }
+
+                    if (!removeMenu()) {
+                        mCurrentMenu = null;
+                    }
+                    handleSessionEnd();
+                    StkAppInstaller.unInstall(mContext);
+                }
+            }
+        }
+    };
+
     @Override
     public void onCreate() {
         // Initialize members
-        // This can return null if StkService is not yet instantiated, but it's ok
-        // If this is null we will do getInstance before we need to use this
-        mStkService = com.android.internal.telephony.cat.CatService
-                .getInstance();
-
         mCmdsQ = new LinkedList<DelayedCmd>();
         Thread serviceThread = new Thread(null, this, "Stk App Service");
         serviceThread.start();
@@ -156,12 +256,29 @@ public class StkAppService extends Service implements Runnable {
         mNotificationManager = (NotificationManager) mContext
                 .getSystemService(Context.NOTIFICATION_SERVICE);
         sInstance = this;
+
+        final IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(SHOW_ALL_APPS);
+        intentFilter.addAction(CLOSE_ALL_APPS);
+        intentFilter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        registerReceiver(mBroadcastReceiver, intentFilter);
+
+        mActivityManager = ActivityManagerNative.getDefault();
     }
 
     @Override
     public void onStart(Intent intent, int startId) {
-        waitForLooper();
 
+        mStkService = com.android.internal.telephony.cat.CatService
+                .getInstance();
+
+        if (mStkService == null) {
+            stopSelf();
+            CatLog.d(this, " Unable to get Service handle");
+            return;
+        }
+
+        waitForLooper();
         // onStart() method can be passed a null intent
         // TODO: replace onStart() with onStartCommand()
         if (intent == null) {
@@ -186,6 +303,7 @@ public class StkAppService extends Service implements Runnable {
         case OP_LAUNCH_APP:
         case OP_END_SESSION:
         case OP_BOOT_COMPLETED:
+        case OP_USER_ACTIVITY:
             break;
         default:
             return;
@@ -197,6 +315,8 @@ public class StkAppService extends Service implements Runnable {
     public void onDestroy() {
         waitForLooper();
         mServiceLooper.quit();
+        unregisterReceiver(mBroadcastReceiver);
+        unregisterProcessObserverIfNotNeeded();
     }
 
     @Override
@@ -311,6 +431,10 @@ public class StkAppService extends Service implements Runnable {
             case OP_DELAYED_MSG:
                 handleDelayedCmd();
                 break;
+            case OP_USER_ACTIVITY:
+                CatLog.d(this, "OP_USER_ACTIVITY");
+                updateUserActivityAvailable();
+                break;
             }
         }
     }
@@ -326,6 +450,7 @@ public class StkAppService extends Service implements Runnable {
         case CLOSE_CHANNEL:
         case RECEIVE_DATA:
         case SEND_DATA:
+        case SET_UP_EVENT_LIST:
             return false;
         }
 
@@ -369,8 +494,8 @@ public class StkAppService extends Service implements Runnable {
             mCmdInProgress = false;
         }
         // In case a launch browser command was just confirmed, launch that url.
-        if (launchBrowser) {
-            launchBrowser = false;
+        if (mLaunchBrowser) {
+            mLaunchBrowser = false;
             launchBrowser(mBrowserSettings);
         }
     }
@@ -383,11 +508,36 @@ public class StkAppService extends Service implements Runnable {
         mCurrentCmd = cmdMsg;
         boolean waitForUsersResponse = true;
 
+        // Retrieve the CatService instance if not yet done
+        if (mStkService == null) {
+            mStkService = com.android.internal.telephony.cat.CatService.getInstance();
+        }
+
         CatLog.d(this, cmdMsg.getCmdType().name());
         switch (cmdMsg.getCmdType()) {
         case DISPLAY_TEXT:
+            if (mStkService == null) {
+                // If StkService is not yet available, simply returns.
+                return;
+            }
+
             TextMessage msg = cmdMsg.geTextMessage();
             responseNeeded = msg.responseNeeded;
+            waitForUsersResponse = msg.responseNeeded;
+            if (!msg.isHighPriority) {
+                if (!isScreenAvailable()) {
+                    waitForUsersResponse = false;
+                    CatLog.d(this, "display text screen busy");
+                    CatResponseMessage resMsg =
+                            new CatResponseMessage(mCurrentCmd);
+                    resMsg.setResultCode(
+                            ResultCode.TERMINAL_CRNTLY_UNABLE_TO_PROCESS);
+                    resMsg.setAdditionalInfo(ADDITIONAL_INFO_SCREEN_BUSY);
+                    mStkService.onCmdResponse(resMsg);
+                    return;
+                }
+            }
+
             if (lastSelectedItem != null) {
                 msg.title = lastSelectedItem;
             } else if (mMainCmd != null){
@@ -442,7 +592,7 @@ public class StkAppService extends Service implements Runnable {
             launchToneDialog();
             break;
         case OPEN_CHANNEL:
-            launchOpenChannelDialog();
+            launchConfirmationDialog(mCurrentCmd.geTextMessage());
             break;
         case CLOSE_CHANNEL:
         case RECEIVE_DATA:
@@ -463,6 +613,10 @@ public class StkAppService extends Service implements Runnable {
                 }
             }
             launchTransientEventMessage();
+            break;
+        case SET_UP_EVENT_LIST:
+            waitForUsersResponse = false;
+            processSetupEventList();
             break;
         }
 
@@ -536,19 +690,39 @@ public class StkAppService extends Service implements Runnable {
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
                 break;
             case LAUNCH_BROWSER:
-                resMsg.setResultCode(confirmed ? ResultCode.OK
-                        : ResultCode.UICC_SESSION_TERM_BY_USER);
                 if (confirmed) {
-                    launchBrowser = true;
+                    mLaunchBrowser = true;
                     mBrowserSettings = mCurrentCmd.getBrowserSettings();
+                }
+                /* If the proactive command "Launch browser: if not already
+                 * launched" is received and the browser is already launched
+                 * then the result code LAUNCH_BROWSER_ERROR and additional
+                 * info STK_BROWSER_UNAVAILABLE will be sent back to SIM.
+                 */
+                if ((mCurrentCmd.getBrowserSettings().mode ==
+                        LaunchBrowserMode.LAUNCH_IF_NOT_ALREADY_LAUNCHED)
+                        && confirmed
+                        && isBrowserAlreadyLaunched()) {
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(STK_BROWSER_UNAVAILABLE);
+                    CatLog.d(this, "LAUNCH_BROWSER_ERROR - BROWSER UNAVAILABLE");
+                    mLaunchBrowser = false;
+                } else {
+                    resMsg.setResultCode(confirmed ? ResultCode.OK
+                            : ResultCode.UICC_SESSION_TERM_BY_USER);
                 }
                 break;
             case SET_UP_CALL:
                 resMsg.setResultCode(ResultCode.OK);
                 resMsg.setConfirmation(confirmed);
                 if (confirmed) {
-                    launchCallMsg();
+                    launchEventMessage(mCurrentCmd.getCallSettings().callMsg);
                 }
+                break;
+            case OPEN_CHANNEL:
+                resMsg.setResultCode(
+                        confirmed ? ResultCode.OK : ResultCode.USER_NOT_ACCEPT);
+                resMsg.setConfirmation(confirmed);
                 break;
             }
             break;
@@ -594,6 +768,33 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
         mStkService.onCmdResponse(resMsg);
+    }
+
+    private boolean isBrowserAlreadyLaunched() {
+        // Maximum running tasks.
+        // Note: setting MAX_TASKS to 50 is far enough.
+        final int MAX_TASKS = 50;
+        ActivityManager activityManager = (ActivityManager) mContext
+                .getSystemService(ACTIVITY_SERVICE);
+        if (activityManager == null) {
+            return false;
+        }
+        List<RunningTaskInfo> runningTaskInfoList = activityManager.getRunningTasks(MAX_TASKS);
+        if (runningTaskInfoList != null) {
+            Iterator<RunningTaskInfo> runningTaskInfoIterator = runningTaskInfoList.iterator();
+            while (runningTaskInfoIterator.hasNext()) {
+                RunningTaskInfo runningTaskInfo = runningTaskInfoIterator.next();
+                if (runningTaskInfo != null) {
+                    ComponentName runningTaskComponent = runningTaskInfo.baseActivity;
+                    CatLog.d(this, runningTaskComponent.getClassName());
+                    if ("com.android.browser.BrowserActivity".equals(
+                        runningTaskComponent.getClassName())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -644,7 +845,7 @@ public class StkAppService extends Service implements Runnable {
     private void launchTextDialog() {
         Intent newIntent = new Intent(this, StkDialogActivity.class);
         newIntent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK
-                | Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+                | Intent.FLAG_ACTIVITY_CLEAR_TASK
                 | Intent.FLAG_ACTIVITY_NO_HISTORY
                 | Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS
                 | getFlagActivityNoUserAction(InitiatedByUserAction.unknown));
@@ -653,7 +854,10 @@ public class StkAppService extends Service implements Runnable {
     }
 
     private void launchEventMessage() {
-        TextMessage msg = mCurrentCmd.geTextMessage();
+        launchEventMessage(mCurrentCmd.geTextMessage());
+    }
+
+    private void launchEventMessage(TextMessage msg) {
         if (msg == null || msg.text == null) {
             return;
         }
@@ -696,9 +900,9 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
 
-        Intent intent = new Intent(Intent.ACTION_VIEW);
+        // to launch home page, make sure that data Uri is null.
+        Uri data = null;
 
-        Uri data;
         if (settings.url != null) {
             CatLog.d(this, "settings.url = " + settings.url);
             if ((settings.url.startsWith("http://") || (settings.url.startsWith("https://")))) {
@@ -708,19 +912,13 @@ public class StkAppService extends Service implements Runnable {
                 CatLog.d(this, "modifiedUrl = " + modifiedUrl);
                 data = Uri.parse(modifiedUrl);
             }
-        } else {
-            // If no URL specified, just bring up the "home page".
-            //
-            // (Note we need to specify *something* in the intent's data field
-            // here, since if you fire off a VIEW intent with no data at all
-            // you'll get an activity chooser rather than the browser.  There's
-            // no specific URI that means "use the default home page", so
-            // instead let's just explicitly bring up http://google.com.)
-            data = Uri.parse("http://google.com/");
         }
-        intent.setData(data);
 
+        Intent intent = new Intent(Intent.ACTION_VIEW, data);
+        intent.setClassName("com.android.browser", "com.android.browser.BrowserActivity");
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
         switch (settings.mode) {
         case USE_EXISTING_BROWSER:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -731,6 +929,8 @@ public class StkAppService extends Service implements Runnable {
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
             break;
+        default:
+            CatLog.d(this, "Unknown launch browser setting mode " + settings.mode);
         }
         // start browser activity
         startActivity(intent);
@@ -740,19 +940,6 @@ public class StkAppService extends Service implements Runnable {
         try {
             Thread.sleep(10000);
         } catch (InterruptedException e) {}
-    }
-
-    private void launchCallMsg() {
-        TextMessage msg = mCurrentCmd.getCallSettings().callMsg;
-        if (msg.text == null || msg.text.length() == 0) {
-            return;
-        }
-        msg.title = lastSelectedItem;
-
-        Toast toast = Toast.makeText(mContext.getApplicationContext(), msg.text,
-                Toast.LENGTH_LONG);
-        toast.setGravity(Gravity.BOTTOM, 0, 0);
-        toast.show();
     }
 
     private void launchIdleText() {
@@ -766,33 +953,30 @@ public class StkAppService extends Service implements Runnable {
         if (msg.text == null) {
             mNotificationManager.cancel(STK_NOTIFICATION_ID);
         } else {
-            Notification notification = new Notification();
-            RemoteViews contentView = new RemoteViews(
-                    PACKAGE_NAME,
-                    com.android.internal.R.layout.status_bar_latest_event_content);
-
-            notification.flags |= Notification.FLAG_NO_CLEAR;
-            notification.icon = com.android.internal.R.drawable.stat_notify_sim_toolkit;
-            // Set text and icon for the status bar and notification body.
-            if (!msg.iconSelfExplanatory) {
-                notification.tickerText = msg.text;
-                contentView.setTextViewText(com.android.internal.R.id.text,
-                        msg.text);
-            }
-            if (msg.icon != null) {
-                contentView.setImageViewBitmap(com.android.internal.R.id.icon,
-                        msg.icon);
-            } else {
-                contentView
-                        .setImageViewResource(
-                                com.android.internal.R.id.icon,
-                                com.android.internal.R.drawable.stat_notify_sim_toolkit);
-            }
-            notification.contentView = contentView;
-            notification.contentIntent = PendingIntent.getService(mContext, 0,
+            PendingIntent pendingIntent = PendingIntent.getService(mContext, 0,
                     new Intent(mContext, StkAppService.class), 0);
 
-            mNotificationManager.notify(STK_NOTIFICATION_ID, notification);
+            final Notification.Builder notificationBuilder = new Notification.Builder(
+                    StkAppService.this);
+            notificationBuilder.setContentTitle("");
+            notificationBuilder
+                    .setSmallIcon(com.android.internal.R.drawable.stat_notify_sim_toolkit);
+            notificationBuilder.setContentIntent(pendingIntent);
+            notificationBuilder.setOngoing(true);
+            // Set text and icon for the status bar and notification body.
+            if (!msg.iconSelfExplanatory) {
+                notificationBuilder.setContentText(msg.text);
+            }
+            if (msg.icon != null) {
+                notificationBuilder.setLargeIcon(msg.icon);
+            } else {
+                Bitmap bitmapIcon = BitmapFactory.decodeResource(StkAppService.this
+                    .getResources().getSystem(),
+                    com.android.internal.R.drawable.stat_notify_sim_toolkit);
+                notificationBuilder.setLargeIcon(bitmapIcon);
+            }
+
+            mNotificationManager.notify(STK_NOTIFICATION_ID, notificationBuilder.build());
         }
     }
 
@@ -913,5 +1097,157 @@ public class StkAppService extends Service implements Runnable {
             return true;
         }
         return false;
+    }
+
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        if (mStkService != null) {
+            String lang = SystemProperties.get("persist.sys.language");
+            if (lang != null && lang.length() == 2) {
+                try {
+                    byte[] additionalInfo = {
+                            (byte)ComprehensionTlvTag.LANGUAGE.value(),
+                            0x02, // Language length
+                            // Language Code - Pair of alpha-numeric characters
+                            GsmAlphabet.stringToGsm7BitPacked(lang.substring(0, 1))[1],
+                            GsmAlphabet.stringToGsm7BitPacked(lang.substring(1, 2))[1]};
+                    mStkService.onEventDownload(new CatEventMessage(
+                            EventCode.LANGUAGE_SELECTION.value(), additionalInfo, true));
+                } catch (EncodeException e) {
+                    CatLog.d(this, "Event Download Language selection Encode error "+ e);
+                }
+            }
+        }
+    }
+
+    private boolean isScreenAvailable() {
+        ActivityManager am = (ActivityManager)mContext
+                .getSystemService(Activity.ACTIVITY_SERVICE);
+        boolean screenAvailable = false;
+
+        if (am == null) {
+            return screenAvailable;
+        }
+
+        List<RunningTaskInfo> tasks = am.getRunningTasks(1);
+        if (tasks != null && tasks.size() > 0) {
+            String packName = tasks.get(0).topActivity.getPackageName();
+            if (packName.equals(PACKAGE_NAME)) {
+                screenAvailable = true;
+                CatLog.d(this, "stk on top");
+            } else {
+                PackageManager pm = getPackageManager();
+                Intent homeIntent = new Intent(Intent.ACTION_MAIN, null);
+                homeIntent.addCategory(Intent.CATEGORY_HOME);
+                List<ResolveInfo> mApps;
+                mApps = pm.queryIntentActivities(homeIntent, 0);
+
+                for (ResolveInfo info : mApps) {
+                    ActivityInfo activity = info.activityInfo;
+                    if (activity.packageName.equals(packName)) {
+                        if (!mAllAppsShown) {
+                            screenAvailable = true;
+                            CatLog.d(this, "home on top");
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+
+        return screenAvailable;
+    }
+
+    private void processSetupEventList() {
+        boolean registerProcessObserver;
+
+        if (mStkService != null) {
+            registerProcessObserver = false;
+            if (mStkService.isEventDownloadActive(EventCode.USER_ACTIVITY.value())) {
+                registerForUserActivityIfNeeded(true);
+            }
+
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+                registerProcessObserver = true;
+            }
+
+            if (mStkService.isEventDownloadActive(EventCode.BROWSER_TERMINATION.value())) {
+                registerProcessObserver = true;
+            }
+        } else {
+            registerProcessObserver = false;
+        }
+
+        try {
+            if (registerProcessObserver) {
+                mActivityManager.registerProcessObserver(mProcessObserver);
+            } else {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+            }
+        } catch (RemoteException e) {
+            CatLog.d(this, "Error registering/unregistering ProcessObserver");
+        }
+    }
+
+    private void unregisterProcessObserverIfNotNeeded() {
+        boolean unregisterProcessObserver;
+        if (mStkService != null) {
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())
+                    || mStkService.isEventDownloadActive(
+                            EventCode.BROWSER_TERMINATION.value())) {
+                unregisterProcessObserver = false;
+            } else {
+                unregisterProcessObserver = true;
+            }
+        } else {
+            unregisterProcessObserver = true;
+        }
+
+        if (unregisterProcessObserver) {
+            try {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+            } catch (RemoteException e) {
+                CatLog.d(this, "Error unregistering ProcessObserver");
+            }
+        }
+    }
+
+    private void updateIdleScreenAvailable() {
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.IDLE_SCREEN_AVAILABLE.value(),
+                    com.android.internal.telephony.cat.CatService.DEV_ID_DISPLAY,
+                    com.android.internal.telephony.cat.CatService.DEV_ID_UICC, null, true));
+        }
+
+        unregisterProcessObserverIfNotNeeded();
+    }
+
+    private void updateUserActivityAvailable() {
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.USER_ACTIVITY.value(), null, true));
+            registerForUserActivityIfNeeded(false);
+        }
+    }
+
+    private void registerForUserActivityIfNeeded(boolean status) {
+        Intent launcherIntent = new Intent(AppInterface.CHECK_USER_ACTIVITY_ACTION);
+        launcherIntent.putExtra("STK_USER_ACTIVITY_REQUEST", status);
+        sendBroadcast(launcherIntent);
+    }
+
+    private void sendBrowserTerminationEvent() {
+        if (mStkService != null) {
+            byte[] additionalInfo = {
+                    (byte)ComprehensionTlvTag.BROWSER_TERMINATION_CAUSE.value(),
+                    0x01, // length
+                    0x00 // user termination
+                    };
+
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.BROWSER_TERMINATION.value(),
+                    additionalInfo, false));
+        }
     }
 }
