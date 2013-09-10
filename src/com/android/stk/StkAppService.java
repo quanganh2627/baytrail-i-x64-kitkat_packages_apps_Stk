@@ -1018,7 +1018,12 @@ public class StkAppService extends Service implements Runnable {
                 notificationBuilder.setLargeIcon(bitmapIcon);
             }
 
-            mNotificationManager.notify(STK_NOTIFICATION_ID, notificationBuilder.build());
+            Notification.BigTextStyle notifBigTextStyle =
+                    new Notification.BigTextStyle(notificationBuilder);
+            if (notifBigTextStyle != null) {
+                notifBigTextStyle.bigText(msg.text);
+                mNotificationManager.notify(STK_NOTIFICATION_ID, notifBigTextStyle.build());
+            }
         }
     }
 
