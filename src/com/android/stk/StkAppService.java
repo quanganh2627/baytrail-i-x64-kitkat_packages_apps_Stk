@@ -40,6 +40,8 @@ import android.content.pm.ResolveInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
+import android.net.ConnectivityManager;
+import android.net.NetworkInfo;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -49,6 +51,7 @@ import android.os.Message;
 import android.os.RemoteException;
 import android.os.SystemProperties;
 import android.telephony.TelephonyManager;
+import android.text.TextUtils;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -242,6 +245,23 @@ public class StkAppService extends Service implements Runnable {
                     handleSessionEnd();
                     StkAppInstaller.unInstall(mContext);
                 }
+            } else if (ConnectivityManager.CONNECTIVITY_ACTION_IMMEDIATE.equals(action)) {
+                NetworkInfo info = intent
+                        .getParcelableExtra(ConnectivityManager.EXTRA_NETWORK_INFO);
+
+                int networkType = info.getType();
+                if (networkType != ConnectivityManager.TYPE_MOBILE
+                        && networkType != ConnectivityManager.TYPE_MOBILE_BIP_GPRS1
+                        && networkType != ConnectivityManager.TYPE_MOBILE_BIP_GPRS2) {
+                    return;
+                }
+
+                if (info.isConnected()) {
+                    // In case a launch browser command was just confirmed, launch that url.
+                    if (mLaunchBrowser) {
+                        launchBrowser(mBrowserSettings);
+                    }
+                }
             }
         }
     };
@@ -261,6 +281,7 @@ public class StkAppService extends Service implements Runnable {
         intentFilter.addAction(SHOW_ALL_APPS);
         intentFilter.addAction(CLOSE_ALL_APPS);
         intentFilter.addAction(TelephonyIntents.ACTION_SIM_STATE_CHANGED);
+        intentFilter.addAction(ConnectivityManager.CONNECTIVITY_ACTION_IMMEDIATE);
         registerReceiver(mBroadcastReceiver, intentFilter);
 
         mActivityManager = ActivityManagerNative.getDefault();
@@ -495,7 +516,6 @@ public class StkAppService extends Service implements Runnable {
         }
         // In case a launch browser command was just confirmed, launch that url.
         if (mLaunchBrowser) {
-            mLaunchBrowser = false;
             launchBrowser(mBrowserSettings);
         }
     }
@@ -620,6 +640,10 @@ public class StkAppService extends Service implements Runnable {
             break;
         }
 
+        if (mLaunchBrowser) {
+            mLaunchBrowser = false;
+        }
+
         if (!waitForUsersResponse) {
             if (mCmdsQ.size() != 0) {
                 callDelayedMsg();
@@ -690,6 +714,7 @@ public class StkAppService extends Service implements Runnable {
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
                 break;
             case LAUNCH_BROWSER:
+                resMsg.setConfirmation(confirmed);
                 if (confirmed) {
                     mLaunchBrowser = true;
                     mBrowserSettings = mCurrentCmd.getBrowserSettings();
@@ -896,6 +921,20 @@ public class StkAppService extends Service implements Runnable {
     }
 
     private void launchBrowser(BrowserSettings settings) {
+        ConnectivityManager cm = (ConnectivityManager) mContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
+
+        if (cm != null) {
+            NetworkInfo networkInfo = cm.getActiveNetworkInfo();
+
+            if (networkInfo == null) return;
+
+            // There is an active network but it is not connected
+            if (networkInfo != null && !networkInfo.isConnected()) return;
+        }
+
+        mLaunchBrowser = false;
+
         if (settings == null) {
             return;
         }
@@ -917,6 +956,9 @@ public class StkAppService extends Service implements Runnable {
         Intent intent = new Intent(Intent.ACTION_VIEW, data);
         intent.setClassName("com.android.browser", "com.android.browser.BrowserActivity");
         intent.addCategory(Intent.CATEGORY_LAUNCHER);
+        if (!TextUtils.isEmpty(settings.proxy)) {
+            intent.putExtra("proxy", settings.proxy);
+        }
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
 
         switch (settings.mode) {
@@ -976,7 +1018,12 @@ public class StkAppService extends Service implements Runnable {
                 notificationBuilder.setLargeIcon(bitmapIcon);
             }
 
-            mNotificationManager.notify(STK_NOTIFICATION_ID, notificationBuilder.build());
+            Notification.BigTextStyle notifBigTextStyle =
+                    new Notification.BigTextStyle(notificationBuilder);
+            if (notifBigTextStyle != null) {
+                notifBigTextStyle.bigText(msg.text);
+                mNotificationManager.notify(STK_NOTIFICATION_ID, notifBigTextStyle.build());
+            }
         }
     }
 
