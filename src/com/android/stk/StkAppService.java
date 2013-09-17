@@ -249,18 +249,24 @@ public class StkAppService extends Service implements Runnable {
                 NetworkInfo info = intent
                         .getParcelableExtra(ConnectivityManager.EXTRA_NETWORK_INFO);
 
-                int networkType = info.getType();
-                if (networkType != ConnectivityManager.TYPE_MOBILE
+                if (info != null) {
+                    int networkType = info.getType();
+
+                    if (networkType != ConnectivityManager.TYPE_MOBILE
                         && networkType != ConnectivityManager.TYPE_MOBILE_BIP_GPRS1
                         && networkType != ConnectivityManager.TYPE_MOBILE_BIP_GPRS2) {
-                    return;
-                }
-
-                if (info.isConnected()) {
-                    // In case a launch browser command was just confirmed, launch that url.
-                    if (mLaunchBrowser) {
-                        launchBrowser(mBrowserSettings);
+                        return;
                     }
+
+                    if (info.isConnected()) {
+                        // In case a launch browser command was just confirmed, launch that url.
+                        if (mLaunchBrowser) {
+                            launchBrowser(mBrowserSettings);
+                        }
+                    }
+                }
+                else {
+                    CatLog.d(this, "Error: info getParcelableExtra returned null" );
                 }
             }
         }
