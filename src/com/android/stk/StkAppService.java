@@ -183,11 +183,23 @@ public class StkAppService extends Service implements Runnable {
         @Override
         public void onForegroundActivitiesChanged(int pid,
                 int uid, boolean foregroundActivities) {
+            String appName = mContext.getPackageManager().getNameForUid(uid);
             if (foregroundActivities) {
-                String appName = mContext.getPackageManager().getNameForUid(uid);
                 if (!mAllAppsShown
                         && appName != null && appName.contains("com.android.launcher")) {
                     updateIdleScreenAvailable();
+                }
+            } else {
+                // The browser app must be present in the system as com.android.browser
+                // and this works only with the Android default browser package.
+                // Note: Needs to be modified to work with other browsers.
+                if (appName.contains("com.android.browser")) {
+                    if (mStkService != null) {
+                        if (mStkService.isEventDownloadActive(
+                                EventCode.BROWSER_TERMINATION.value())) {
+                            sendBrowserTerminationEvent();
+                        }
+                    }
                 }
             }
         }
@@ -1163,6 +1175,10 @@ public class StkAppService extends Service implements Runnable {
             if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
                 registerProcessObserver = true;
             }
+
+            if (mStkService.isEventDownloadActive(EventCode.BROWSER_TERMINATION.value())) {
+                registerProcessObserver = true;
+            }
         } else {
             registerProcessObserver = false;
         }
@@ -1181,7 +1197,9 @@ public class StkAppService extends Service implements Runnable {
     private void unregisterProcessObserverIfNotNeeded() {
         boolean unregisterProcessObserver;
         if (mStkService != null) {
-            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())
+                    || mStkService.isEventDownloadActive(
+                            EventCode.BROWSER_TERMINATION.value())) {
                 unregisterProcessObserver = false;
             } else {
                 unregisterProcessObserver = true;
@@ -1222,5 +1240,19 @@ public class StkAppService extends Service implements Runnable {
         Intent launcherIntent = new Intent(AppInterface.CHECK_USER_ACTIVITY_ACTION);
         launcherIntent.putExtra("STK_USER_ACTIVITY_REQUEST", status);
         sendBroadcast(launcherIntent);
+    }
+
+    private void sendBrowserTerminationEvent() {
+        if (mStkService != null) {
+            byte[] additionalInfo = {
+                    (byte)ComprehensionTlvTag.BROWSER_TERMINATION_CAUSE.value(),
+                    0x01, // length
+                    0x00 // user termination
+                    };
+
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.BROWSER_TERMINATION.value(),
+                    additionalInfo, false));
+        }
     }
 }
