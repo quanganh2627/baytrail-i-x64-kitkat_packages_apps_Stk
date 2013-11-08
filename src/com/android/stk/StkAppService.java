@@ -28,6 +28,7 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -71,12 +72,14 @@ import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
 import com.android.internal.telephony.cat.ComprehensionTlvTag;
 import com.android.internal.telephony.cat.EventCode;
+import com.android.internal.telephony.cat.LaunchBrowserMode;
 import com.android.internal.telephony.cat.TextMessage;
 import com.android.internal.telephony.EncodeException;
 import com.android.internal.telephony.GsmAlphabet;
 import com.android.internal.telephony.IccCardConstants;
 import com.android.internal.telephony.TelephonyIntents;
 
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 
@@ -102,7 +105,7 @@ public class StkAppService extends Service implements Runnable {
     private NotificationManager mNotificationManager = null;
     private IActivityManager mActivityManager;
     private LinkedList<DelayedCmd> mCmdsQ = null;
-    private boolean launchBrowser = false;
+    private boolean mLaunchBrowser = false;
     private BrowserSettings mBrowserSettings = null;
     static StkAppService sInstance = null;
 
@@ -146,6 +149,7 @@ public class StkAppService extends Service implements Runnable {
 
     // Additional information (see 3GPP TS 11.14 for details)
     static final int ADDITIONAL_INFO_SCREEN_BUSY = 1;
+    static final int STK_BROWSER_UNAVAILABLE = 0x02;
 
     static final int YES = 1;
     static final int NO = 0;
@@ -478,8 +482,8 @@ public class StkAppService extends Service implements Runnable {
             mCmdInProgress = false;
         }
         // In case a launch browser command was just confirmed, launch that url.
-        if (launchBrowser) {
-            launchBrowser = false;
+        if (mLaunchBrowser) {
+            mLaunchBrowser = false;
             launchBrowser(mBrowserSettings);
         }
     }
@@ -678,11 +682,26 @@ public class StkAppService extends Service implements Runnable {
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
                 break;
             case LAUNCH_BROWSER:
-                resMsg.setResultCode(confirmed ? ResultCode.OK
-                        : ResultCode.UICC_SESSION_TERM_BY_USER);
                 if (confirmed) {
-                    launchBrowser = true;
+                    mLaunchBrowser = true;
                     mBrowserSettings = mCurrentCmd.getBrowserSettings();
+                }
+                /* If the proactive command "Launch browser: if not already
+                 * launched" is received and the browser is already launched
+                 * then the result code LAUNCH_BROWSER_ERROR and additional
+                 * info STK_BROWSER_UNAVAILABLE will be sent back to SIM.
+                 */
+                if ((mCurrentCmd.getBrowserSettings().mode ==
+                        LaunchBrowserMode.LAUNCH_IF_NOT_ALREADY_LAUNCHED)
+                        && confirmed
+                        && isBrowserAlreadyLaunched()) {
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(STK_BROWSER_UNAVAILABLE);
+                    CatLog.d(this, "LAUNCH_BROWSER_ERROR - BROWSER UNAVAILABLE");
+                    mLaunchBrowser = false;
+                } else {
+                    resMsg.setResultCode(confirmed ? ResultCode.OK
+                            : ResultCode.UICC_SESSION_TERM_BY_USER);
                 }
                 break;
             case SET_UP_CALL:
@@ -743,6 +762,33 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
         mStkService.onCmdResponse(resMsg);
+    }
+
+    private boolean isBrowserAlreadyLaunched() {
+        // Maximum running tasks.
+        // Note: setting MAX_TASKS to 50 is far enough.
+        final int MAX_TASKS = 50;
+        ActivityManager activityManager = (ActivityManager) mContext
+                .getSystemService(ACTIVITY_SERVICE);
+        if (activityManager == null) {
+            return false;
+        }
+        List<RunningTaskInfo> runningTaskInfoList = activityManager.getRunningTasks(MAX_TASKS);
+        if (runningTaskInfoList != null) {
+            Iterator<RunningTaskInfo> runningTaskInfoIterator = runningTaskInfoList.iterator();
+            while (runningTaskInfoIterator.hasNext()) {
+                RunningTaskInfo runningTaskInfo = runningTaskInfoIterator.next();
+                if (runningTaskInfo != null) {
+                    ComponentName runningTaskComponent = runningTaskInfo.baseActivity;
+                    CatLog.d(this, runningTaskComponent.getClassName());
+                    if ("com.android.browser.BrowserActivity".equals(
+                        runningTaskComponent.getClassName())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     /**
@@ -848,7 +894,7 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
 
-        Intent intent = null;
+        // to launch home page, make sure that data Uri is null.
         Uri data = null;
 
         if (settings.url != null) {
@@ -861,18 +907,11 @@ public class StkAppService extends Service implements Runnable {
                 data = Uri.parse(modifiedUrl);
             }
         }
-        if (data != null) {
-            intent = new Intent(Intent.ACTION_VIEW);
-            intent.setData(data);
-        } else {
-            // if the command did not contain a URL,
-            // launch the browser to the default homepage.
-            CatLog.d(this, "launch browser with default URL ");
-            intent = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN,
-                    Intent.CATEGORY_APP_BROWSER);
-        }
-
+        Intent intent = new Intent(Intent.ACTION_VIEW, data);
+        intent.setClassName("com.android.browser", "com.android.browser.BrowserActivity");
+        intent.addCategory(Intent.CATEGORY_LAUNCHER);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+
         switch (settings.mode) {
         case USE_EXISTING_BROWSER:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
@@ -883,6 +922,8 @@ public class StkAppService extends Service implements Runnable {
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
             break;
+        default:
+            CatLog.d(this, "Unknown launch browser setting mode " + settings.mode);
         }
         // start browser activity
         startActivity(intent);
