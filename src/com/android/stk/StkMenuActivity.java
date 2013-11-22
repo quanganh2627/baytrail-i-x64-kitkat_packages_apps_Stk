@@ -16,20 +16,16 @@
 
 package com.android.stk;
 
-import android.app.ActionBar;
 import android.app.ListActivity;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
-import android.view.ContextMenu;
-import android.view.ContextMenu.ContextMenuInfo;
 import android.view.KeyEvent;
 import android.view.MenuItem;
 import android.view.View;
 import android.view.Window;
-import android.widget.AdapterView;
 import android.widget.ImageView;
 import android.widget.ListView;
 import android.widget.ProgressBar;
@@ -45,7 +41,7 @@ import com.android.internal.telephony.cat.CatLog;
  * menu content.
  *
  */
-public class StkMenuActivity extends ListActivity implements View.OnCreateContextMenuListener {
+public class StkMenuActivity extends ListActivity {
     private Context mContext;
     private Menu mStkMenu = null;
     private int mState = STATE_MAIN;
@@ -63,7 +59,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
 
     // message id for time out
     private static final int MSG_ID_TIMEOUT = 1;
-    private static final int CONTEXT_MENU_HELP = 0;
 
     Handler mTimeoutHandler = new Handler() {
         @Override
@@ -82,12 +77,10 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         super.onCreate(icicle);
 
         CatLog.d(this, "onCreate");
+        // Remove the default title, customized one is used.
+        requestWindowFeature(Window.FEATURE_NO_TITLE);
         // Set the layout for this activity.
         setContentView(R.layout.stk_menu_list);
-
-        // Hide default title and icon, customized one is used
-        getActionBar().setDisplayShowTitleEnabled(false);
-        getActionBar().setDisplayShowHomeEnabled(false);
 
         mTitleTextView = (TextView) findViewById(R.id.title_text);
         mTitleIconView = (ImageView) findViewById(R.id.title_icon);
@@ -96,8 +89,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
 
         initFromIntent(getIntent());
         mAcceptUsersInput = true;
-
-        getListView().setOnCreateContextMenuListener(this);
     }
 
     @Override
@@ -107,7 +98,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         CatLog.d(this, "onNewIntent");
         initFromIntent(intent);
         mAcceptUsersInput = true;
-        invalidateOptionsMenu();
     }
 
     @Override
@@ -180,11 +170,11 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         super.onPause();
 
         appService.indicateMenuVisibility(false);
+        cancelTimeOut();
     }
 
     @Override
     public void onDestroy() {
-        getListView().setOnCreateContextMenuListener(null);
         super.onDestroy();
 
         CatLog.d(this, "onDestroy");
@@ -245,46 +235,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
     }
 
     @Override
-    public void onCreateContextMenu(ContextMenu menu, View v,
-            ContextMenuInfo menuInfo) {
-        CatLog.d(this, "onCreateContextMenu");
-        boolean helpVisible = false;
-        if (mStkMenu != null) {
-            helpVisible = mStkMenu.helpAvailable;
-        }
-        if (helpVisible) {
-            CatLog.d(this, "add menu");
-            menu.add(0, CONTEXT_MENU_HELP, 0, R.string.help);
-        }
-    }
-
-    @Override
-    public boolean onContextItemSelected(MenuItem item) {
-        AdapterView.AdapterContextMenuInfo info;
-        try {
-            info = (AdapterView.AdapterContextMenuInfo) item.getMenuInfo();
-        } catch (ClassCastException e) {
-            return false;
-        }
-        switch (item.getItemId()) {
-            case CONTEXT_MENU_HELP:
-                cancelTimeOut();
-                mAcceptUsersInput = false;
-                int position = info.position;
-                CatLog.d(this, "Position:" + position);
-                Item stkItem = getSelectedItem(position);
-                if (stkItem != null) {
-                    CatLog.d(this, "item id:" + stkItem.id);
-                    sendResponse(StkAppService.RES_ID_MENU_SELECTION, stkItem.id, true);
-                }
-                return true;
-
-            default:
-                return super.onContextItemSelected(item);
-        }
-    }
-
-    @Override
     protected void onSaveInstanceState(Bundle outState) {
         outState.putInt("STATE", mState);
         outState.putParcelable("MENU", mStkMenu);
@@ -301,8 +251,7 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
     }
 
     private void startTimeOut() {
-        if (mState == STATE_SECONDARY
-            && !mTimeoutHandler.hasMessages(MSG_ID_TIMEOUT)) {
+        if (mState == STATE_SECONDARY) {
             // Reset timeout.
             cancelTimeOut();
             mTimeoutHandler.sendMessageDelayed(mTimeoutHandler
@@ -338,7 +287,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
             setListAdapter(adapter);
             // Set default item
             setSelection(mStkMenu.defaultItem);
-            adapter.setDefaultItem(mStkMenu.defaultItem);
         }
     }
 
@@ -346,9 +294,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
 
         if (intent != null) {
             mState = intent.getIntExtra("STATE", STATE_MAIN);
-            if (mState == STATE_MAIN) {
-                cancelTimeOut();
-            }
         } else {
             finish();
         }
@@ -377,8 +322,6 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
     }
 
     private void sendResponse(int resId, int itemId, boolean help) {
-        cancelTimeOut();
-
         Bundle args = new Bundle();
         args.putInt(StkAppService.OPCODE, StkAppService.OP_RESPONSE);
         args.putInt(StkAppService.RES_ID, resId);
