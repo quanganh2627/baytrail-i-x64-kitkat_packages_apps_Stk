@@ -16,15 +16,19 @@
 
 package com.android.stk;
 
+import android.app.ActionBar;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.text.Editable;
 import android.text.InputFilter;
+import android.text.InputType;
 import android.text.TextWatcher;
 import android.text.method.PasswordTransformationMethod;
 import android.view.KeyEvent;
@@ -53,6 +57,7 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
     private View mYesNoLayout = null;
     private View mNormalLayout = null;
     private Input mStkInput = null;
+    private ActionBar mActionBar = null;
 
     // Constants
     private static final int STATE_TEXT = 1;
@@ -112,12 +117,12 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
         super.onCreate(icicle);
 
         // Set the layout for this activity.
-        requestWindowFeature(Window.FEATURE_LEFT_ICON);
         setContentView(R.layout.stk_input);
 
         // Initialize members
         mTextIn = (EditText) this.findViewById(R.id.in_text);
         mPromptView = (TextView) this.findViewById(R.id.prompt);
+        mActionBar = getActionBar();
 
         // Set buttons listeners.
         Button okButton = (Button) findViewById(R.id.button_ok);
@@ -159,14 +164,14 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
     public void onResume() {
         super.onResume();
 
-        startTimeOut();
+        if (!mTimeoutHandler.hasMessages(MSG_ID_TIMEOUT)) {
+            startTimeOut();
+        }
     }
 
     @Override
     public void onPause() {
         super.onPause();
-
-        cancelTimeOut();
     }
 
     @Override
@@ -185,6 +190,8 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
     }
 
     private void sendResponse(int resId, String input, boolean help) {
+        cancelTimeOut();
+
         Bundle args = new Bundle();
         args.putInt(StkAppService.OPCODE, StkAppService.OP_RESPONSE);
         args.putInt(StkAppService.RES_ID, resId);
@@ -282,9 +289,12 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
         }
         inTypeView.setText(inTypeId);
 
+        // Update icon of the action bar (hide it if no icon provided)
         if (mStkInput.icon != null) {
-            setFeatureDrawable(Window.FEATURE_LEFT_ICON, new BitmapDrawable(
-                    mStkInput.icon));
+            mActionBar.setIcon(new BitmapDrawable(getResources(), mStkInput.icon));
+        } else {
+            mActionBar.setIcon(new ColorDrawable(
+                    getResources().getColor(android.R.color.transparent)));
         }
 
         // Handle specific global and text attributes.
@@ -303,8 +313,8 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
             numOfCharsView.setText(lengthLimit);
 
             if (!mStkInput.echo) {
-                mTextIn.setTransformationMethod(PasswordTransformationMethod
-                        .getInstance());
+                mTextIn.setInputType(InputType.TYPE_CLASS_NUMBER
+                                     | InputType.TYPE_NUMBER_VARIATION_PASSWORD);
             }
             // Set default text if present.
             if (mStkInput.defaultText != null) {
