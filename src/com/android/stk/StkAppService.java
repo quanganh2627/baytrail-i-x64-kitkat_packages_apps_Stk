@@ -252,16 +252,13 @@ public class StkAppService extends Service implements Runnable {
                     int networkType = info.getType();
 
                     if (networkType != ConnectivityManager.TYPE_MOBILE
-                        && networkType != ConnectivityManager.TYPE_MOBILE_BIP_GPRS1
-                        && networkType != ConnectivityManager.TYPE_MOBILE_BIP_GPRS2) {
+                            && networkType != ConnectivityManager.TYPE_MOBILE_CBS) {
                         return;
                     }
 
-                    if (info.isConnected()) {
+                    if (info.isConnected() && mLaunchBrowser) {
                         // In case a launch browser command was just confirmed, launch that url.
-                        if (mLaunchBrowser) {
-                            launchBrowser(mBrowserSettings);
-                        }
+                        launchBrowser(mBrowserSettings);
                     }
                 }
                 else {
