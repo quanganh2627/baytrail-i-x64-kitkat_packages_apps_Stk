@@ -37,6 +37,7 @@ import android.widget.TextView;
 public class StkDialogActivity extends Activity implements View.OnClickListener {
     // members
     TextMessage mTextMsg;
+    TextView mMessageView;
 
     Handler mTimeoutHandler = new Handler() {
         @Override
@@ -71,11 +72,9 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
         }
 
         requestWindowFeature(Window.FEATURE_LEFT_ICON);
-        Window window = getWindow();
 
         setContentView(R.layout.stk_msg_dialog);
-        TextView mMessageView = (TextView) window
-                .findViewById(R.id.dialog_message);
+        mMessageView = (TextView) findViewById(R.id.dialog_message);
 
         Button okButton = (Button) findViewById(R.id.button_ok);
         Button cancelButton = (Button) findViewById(R.id.button_cancel);
@@ -83,16 +82,32 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
         okButton.setOnClickListener(this);
         cancelButton.setOnClickListener(this);
 
+        updateMessage();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+
+        initFromIntent(intent);
+        if (mTextMsg == null) {
+            finish();
+            return;
+        }
+        updateMessage();
+    }
+
+    private void updateMessage() {
         setTitle(mTextMsg.title);
         if (!(mTextMsg.iconSelfExplanatory && mTextMsg.icon != null)) {
             mMessageView.setText(mTextMsg.text);
         }
 
         if (mTextMsg.icon == null) {
-            window.setFeatureDrawableResource(Window.FEATURE_LEFT_ICON,
+            getWindow().setFeatureDrawableResource(Window.FEATURE_LEFT_ICON,
                     com.android.internal.R.drawable.stat_notify_sim_toolkit);
         } else {
-            window.setFeatureDrawable(Window.FEATURE_LEFT_ICON,
+            getWindow().setFeatureDrawable(Window.FEATURE_LEFT_ICON,
                     new BitmapDrawable(mTextMsg.icon));
         }
     }
