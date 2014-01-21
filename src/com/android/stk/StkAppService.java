@@ -28,7 +28,6 @@ import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
 import android.content.BroadcastReceiver;
-import android.content.ComponentName;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
@@ -50,6 +49,7 @@ import android.os.Looper;
 import android.os.Message;
 import android.os.RemoteException;
 import android.os.SystemProperties;
+import android.provider.Browser;
 import android.telephony.TelephonyManager;
 import android.text.TextUtils;
 import android.util.Log;
@@ -75,7 +75,6 @@ import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
 import com.android.internal.telephony.cat.ComprehensionTlvTag;
 import com.android.internal.telephony.cat.EventCode;
-import com.android.internal.telephony.cat.LaunchBrowserMode;
 import com.android.internal.telephony.cat.TextMessage;
 import com.android.internal.telephony.EncodeException;
 import com.android.internal.telephony.GsmAlphabet;
@@ -614,7 +613,25 @@ public class StkAppService extends Service implements Runnable {
             launchEventMessage();
             break;
         case LAUNCH_BROWSER:
-            launchConfirmationDialog(mCurrentCmd.geTextMessage());
+            /* Per 3GPP specification 102.223 the terminal shall ask the user for confirmation
+             * if the alpha identifier is present and if the launch browser command requests the
+             * existing browser session connected to a new URL.
+             *
+             * As we support tabulation, we ask the user for confirmation only if the alpha
+             * identifier is present.
+             */
+            if (mCurrentCmd.geTextMessage().text != null) {
+                launchConfirmationDialog(mCurrentCmd.geTextMessage());
+            } else {
+                CatResponseMessage resMsg =
+                        new CatResponseMessage(mCurrentCmd);
+                resMsg.setConfirmation(true);
+                resMsg.setResultCode(ResultCode.OK);
+                mLaunchBrowser = true;
+                mBrowserSettings = mCurrentCmd.getBrowserSettings();
+                mStkService.onCmdResponse(resMsg);
+                return;
+            }
             break;
         case SET_UP_CALL:
             launchConfirmationDialog(mCurrentCmd.getCallSettings().confirmMsg);
@@ -730,26 +747,11 @@ public class StkAppService extends Service implements Runnable {
                 break;
             case LAUNCH_BROWSER:
                 resMsg.setConfirmation(confirmed);
+                resMsg.setResultCode(confirmed ? ResultCode.OK
+                        : ResultCode.UICC_SESSION_TERM_BY_USER);
                 if (confirmed) {
                     mLaunchBrowser = true;
                     mBrowserSettings = mCurrentCmd.getBrowserSettings();
-                }
-                /* If the proactive command "Launch browser: if not already
-                 * launched" is received and the browser is already launched
-                 * then the result code LAUNCH_BROWSER_ERROR and additional
-                 * info STK_BROWSER_UNAVAILABLE will be sent back to SIM.
-                 */
-                if ((mCurrentCmd.getBrowserSettings().mode ==
-                        LaunchBrowserMode.LAUNCH_IF_NOT_ALREADY_LAUNCHED)
-                        && confirmed
-                        && isBrowserAlreadyLaunched()) {
-                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
-                    resMsg.setAdditionalInfo(STK_BROWSER_UNAVAILABLE);
-                    CatLog.d(this, "LAUNCH_BROWSER_ERROR - BROWSER UNAVAILABLE");
-                    mLaunchBrowser = false;
-                } else {
-                    resMsg.setResultCode(confirmed ? ResultCode.OK
-                            : ResultCode.UICC_SESSION_TERM_BY_USER);
                 }
                 break;
             case SET_UP_CALL:
@@ -815,33 +817,6 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
         mStkService.onCmdResponse(resMsg);
-    }
-
-    private boolean isBrowserAlreadyLaunched() {
-        // Maximum running tasks.
-        // Note: setting MAX_TASKS to 50 is far enough.
-        final int MAX_TASKS = 50;
-        ActivityManager activityManager = (ActivityManager) mContext
-                .getSystemService(ACTIVITY_SERVICE);
-        if (activityManager == null) {
-            return false;
-        }
-        List<RunningTaskInfo> runningTaskInfoList = activityManager.getRunningTasks(MAX_TASKS);
-        if (runningTaskInfoList != null) {
-            Iterator<RunningTaskInfo> runningTaskInfoIterator = runningTaskInfoList.iterator();
-            while (runningTaskInfoIterator.hasNext()) {
-                RunningTaskInfo runningTaskInfo = runningTaskInfoIterator.next();
-                if (runningTaskInfo != null) {
-                    ComponentName runningTaskComponent = runningTaskInfo.baseActivity;
-                    CatLog.d(this, runningTaskComponent.getClassName());
-                    if ("com.android.browser.BrowserActivity".equals(
-                        runningTaskComponent.getClassName())) {
-                        return true;
-                    }
-                }
-            }
-        }
-        return false;
     }
 
     /**
@@ -991,6 +966,7 @@ public class StkAppService extends Service implements Runnable {
             break;
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true);
             break;
         default:
             CatLog.d(this, "Unknown launch browser setting mode " + settings.mode);
