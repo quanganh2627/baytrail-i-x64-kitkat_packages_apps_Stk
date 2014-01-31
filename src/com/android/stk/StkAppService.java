@@ -215,8 +215,6 @@ public class StkAppService extends Service implements Runnable {
         }
     };
 
-    private BroadcastReceiver mStkCmdReceiver = new StkCmdReceiver();
-
     // To pass 3GPP Conformance 51.010-4 27.22.4.1.1/2, when apps list is displayed
     // in Home screen, it is considered as BUSY
     private boolean mAllAppsShown = false;
@@ -287,11 +285,6 @@ public class StkAppService extends Service implements Runnable {
         intentFilter.addAction(ConnectivityManager.CONNECTIVITY_ACTION_IMMEDIATE);
         registerReceiver(mBroadcastReceiver, intentFilter);
 
-        final IntentFilter stkCmdFilter = new IntentFilter();
-        stkCmdFilter.addAction(AppInterface.CAT_CMD_ACTION);
-        stkCmdFilter.addAction(AppInterface.CAT_SESSION_END_ACTION);
-        stkCmdFilter.addAction(AppInterface.USER_ACTIVITY_AVAILABLE_ACTION);
-        registerReceiver(mStkCmdReceiver, stkCmdFilter);
         mActivityManager = ActivityManagerNative.getDefault();
     }
 
@@ -346,7 +339,6 @@ public class StkAppService extends Service implements Runnable {
         waitForLooper();
         mServiceLooper.quit();
         unregisterReceiver(mBroadcastReceiver);
-        unregisterReceiver(mStkCmdReceiver);
         unregisterProcessObserverIfNotNeeded();
     }
 

@@ -81,6 +81,14 @@
 			</intent-filter>
 		</activity>
 
+		<receiver android:name="com.android.stk.StkCmdReceiver">
+            <intent-filter>
+                <action android:name= "android.intent.action.stk.command" />
+                <action android:name= "android.intent.action.stk.session_end" />
+                <action android:name= "android.intent.action.stk.user_activity_available" />
+            </intent-filter>
+        </receiver>
+
         <receiver android:name="com.android.stk.BootCompletedReceiver"
                     androidprv:primaryUserOnly="true">
             <intent-filter  android:priority="10">
