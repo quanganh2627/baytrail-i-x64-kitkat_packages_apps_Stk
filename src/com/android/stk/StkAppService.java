@@ -615,6 +615,10 @@ public class StkAppService extends Service implements Runnable {
             if (mCurrentCmd.geTextMessage().text != null) {
                 launchConfirmationDialog(mCurrentCmd.geTextMessage());
             } else {
+                if (mStkService == null) {
+                    // If StkService is not yet available, simply returns.
+                    return;
+                }
                 CatResponseMessage resMsg =
                         new CatResponseMessage(mCurrentCmd);
                 resMsg.setConfirmation(true);
