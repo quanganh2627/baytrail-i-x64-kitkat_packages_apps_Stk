@@ -215,6 +215,8 @@ public class StkAppService extends Service implements Runnable {
         }
     };
 
+    private BroadcastReceiver mStkCmdReceiver = new StkCmdReceiver();
+
     // To pass 3GPP Conformance 51.010-4 27.22.4.1.1/2, when apps list is displayed
     // in Home screen, it is considered as BUSY
     private boolean mAllAppsShown = false;
@@ -230,7 +232,9 @@ public class StkAppService extends Service implements Runnable {
             } else if (TelephonyIntents.ACTION_SIM_STATE_CHANGED.equals(intent.getAction())) {
                 String stateExtra = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
                 if (stateExtra != null
-                        && IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(stateExtra)) {
+                        && (IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(stateExtra)
+                        || IccCardConstants.INTENT_VALUE_ICC_UNKNOWN.equals(stateExtra)
+                        || IccCardConstants.INTENT_VALUE_ICC_NOT_READY.equals(stateExtra))) {
                     try {
                         mActivityManager.unregisterProcessObserver(mProcessObserver);
                     } catch (RemoteException e) {
@@ -285,6 +289,11 @@ public class StkAppService extends Service implements Runnable {
         intentFilter.addAction(ConnectivityManager.CONNECTIVITY_ACTION_IMMEDIATE);
         registerReceiver(mBroadcastReceiver, intentFilter);
 
+        final IntentFilter stkCmdFilter = new IntentFilter();
+        stkCmdFilter.addAction(AppInterface.CAT_CMD_ACTION);
+        stkCmdFilter.addAction(AppInterface.CAT_SESSION_END_ACTION);
+        stkCmdFilter.addAction(AppInterface.USER_ACTIVITY_AVAILABLE_ACTION);
+        registerReceiver(mStkCmdReceiver, stkCmdFilter);
         mActivityManager = ActivityManagerNative.getDefault();
     }
 
@@ -295,7 +304,6 @@ public class StkAppService extends Service implements Runnable {
                 .getInstance();
 
         if (mStkService == null) {
-            stopSelf();
             CatLog.d(this, " Unable to get Service handle");
             StkAppInstaller.unInstall(mContext);
             return;
@@ -339,6 +347,7 @@ public class StkAppService extends Service implements Runnable {
         waitForLooper();
         mServiceLooper.quit();
         unregisterReceiver(mBroadcastReceiver);
+        unregisterReceiver(mStkCmdReceiver);
         unregisterProcessObserverIfNotNeeded();
     }
 
@@ -449,6 +458,11 @@ public class StkAppService extends Service implements Runnable {
                 CatLog.d(this, "OP_BOOT_COMPLETED");
                 if (mMainCmd == null) {
                     StkAppInstaller.unInstall(mContext);
+                    processPendingCmdIfAny();
+                }
+
+                if (mStkService != null) {
+                    mStkService.setAppReady();
                 }
                 break;
             case OP_DELAYED_MSG:
@@ -458,6 +472,38 @@ public class StkAppService extends Service implements Runnable {
                 CatLog.d(this, "OP_USER_ACTIVITY");
                 updateUserActivityAvailable();
                 break;
+            }
+        }
+    }
+
+    private void processPendingCmdIfAny() {
+        mStkService = com.android.internal.telephony.cat.CatService
+                .getInstance();
+
+        if (mStkService == null) {
+            CatLog.d(this, " Unable to get Service handle");
+            return;
+        }
+
+        CatCmdMessage cmdMsg = mStkService.getCurrentCmd();
+        if (cmdMsg == null) return;
+
+        // There are two types of commands:
+        // 1. Interactive - user's response is required.
+        // 2. Informative - display a message, no interaction with the user.
+        //
+        // Informative commands can be handled immediately without any delay.
+        // Interactive commands can't override each other. So if a command
+        // is already in progress, we need to queue the next command until
+        // the user has responded or a timeout expired.
+        if (!isCmdInteractive(cmdMsg)) {
+            handleCmd(cmdMsg);
+        } else {
+            if (!mCmdInProgress) {
+                mCmdInProgress = true;
+                handleCmd(cmdMsg);
+            } else {
+                mCmdsQ.addLast(new DelayedCmd(OP_CMD, cmdMsg));
             }
         }
     }
