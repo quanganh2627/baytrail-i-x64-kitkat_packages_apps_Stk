@@ -231,12 +231,12 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
             return true;
         case StkApp.MENU_ID_HELP:
             cancelTimeOut();
-            mAcceptUsersInput = false;
             int position = getSelectedItemPosition();
             Item stkItem = getSelectedItem(position);
             if (stkItem == null) {
                 break;
             }
+            mAcceptUsersInput = false;
             // send help needed response.
             sendResponse(StkAppService.RES_ID_MENU_SELECTION, stkItem.id, true);
             return true;
@@ -269,12 +269,12 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         switch (item.getItemId()) {
             case CONTEXT_MENU_HELP:
                 cancelTimeOut();
-                mAcceptUsersInput = false;
                 int position = info.position;
                 CatLog.d(this, "Position:" + position);
                 Item stkItem = getSelectedItem(position);
                 if (stkItem != null) {
                     CatLog.d(this, "item id:" + stkItem.id);
+                    mAcceptUsersInput = false;
                     sendResponse(StkAppService.RES_ID_MENU_SELECTION, stkItem.id, true);
                 }
                 return true;
