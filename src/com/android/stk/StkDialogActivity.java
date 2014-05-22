@@ -25,8 +25,10 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.Window;
+import android.view.WindowManager.LayoutParams;
 import android.widget.Button;
 import android.widget.TextView;
 
@@ -72,6 +74,12 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
         }
 
         requestWindowFeature(Window.FEATURE_LEFT_ICON);
+        // Set to non-modal in order to receive touch events.
+        getWindow().setFlags(LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                LayoutParams.FLAG_NOT_TOUCH_MODAL);
+        // Set to be notified when touch outside happens.
+        getWindow().setFlags(LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH);
 
         setContentView(R.layout.stk_msg_dialog);
         mMessageView = (TextView) findViewById(R.id.dialog_message);
@@ -150,6 +158,25 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
     @Override
     public void onPause() {
         super.onPause();
+    }
+
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        /* startTimeOut is not canceled when touching
+         * outside the dialog.
+         * So when touched outside and next timeout occurs,
+         * a wrong Terminal Response is sent to UICC and
+         * leading sometimes stk application to hang.
+         * To prevent this, sending cancel notification and
+         * finishing the dialog activity when Touch Outside
+         * notification event received.
+         */
+        if (MotionEvent.ACTION_OUTSIDE == event.getAction()) {
+            sendResponse(StkAppService.RES_ID_CONFIRM, false);
+            finish();
+            return true;
+        }
+        return super.onTouchEvent(event);
     }
 
     @Override
