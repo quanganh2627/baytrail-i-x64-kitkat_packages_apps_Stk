@@ -16,10 +16,13 @@
 
 package com.android.stk;
 
-import com.android.internal.telephony.cat.TextMessage;
+import static com.android.internal.telephony.TelephonyConstants.ACTION_RIL_SWITCHING;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.drawable.BitmapDrawable;
 import android.os.Bundle;
 import android.os.Handler;
@@ -29,6 +32,9 @@ import android.view.View;
 import android.view.Window;
 import android.widget.Button;
 import android.widget.TextView;
+
+import com.android.internal.telephony.cat.CatLog;
+import com.android.internal.telephony.cat.TextMessage;
 
 /**
  * AlretDialog used for DISPLAY TEXT commands.
@@ -59,6 +65,7 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
     // buttons id
     public static final int OK_BUTTON = R.id.button_ok;
     public static final int CANCEL_BUTTON = R.id.button_cancel;
+    private boolean  hasRegistered = false;
 
     @Override
     protected void onCreate(Bundle icicle) {
@@ -95,6 +102,11 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
             window.setFeatureDrawable(Window.FEATURE_LEFT_ICON,
                     new BitmapDrawable(mTextMsg.icon));
         }
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_RIL_SWITCHING);
+        registerReceiver(mBroadcastReceiver, filter);
+        hasRegistered = true;
     }
 
     public void onClick(View v) {
@@ -132,8 +144,18 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
     @Override
     public void onPause() {
         super.onPause();
+        CatLog.d(this, "STK1, onPause");
 
         cancelTimeOut();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        CatLog.d(this, "STK1, onDestroy");
+        if (hasRegistered) {
+            unregisterReceiver(mBroadcastReceiver);
+        }
     }
 
     @Override
@@ -191,4 +213,12 @@ public class StkDialogActivity extends Activity implements View.OnClickListener 
         mTimeoutHandler.sendMessageDelayed(mTimeoutHandler
                 .obtainMessage(MSG_ID_TIMEOUT), dialogDuration);
     }
+
+    final BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            CatLog.d(this, "STK1,recv intent:" + intent.getAction());
+            finish();
+        }
+    };
 }

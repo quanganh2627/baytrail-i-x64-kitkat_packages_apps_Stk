@@ -16,27 +16,29 @@
 
 package com.android.stk;
 
+import static com.android.internal.telephony.TelephonyConstants.ACTION_RIL_SWITCHING;
+
 import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
-import android.telephony.TelephonyManager;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
-import android.view.Window;
 import android.view.WindowManager;
 import android.widget.ImageView;
 import android.widget.RemoteViews;
@@ -44,15 +46,20 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.android.internal.telephony.cat.AppInterface;
-import com.android.internal.telephony.cat.Menu;
-import com.android.internal.telephony.cat.Item;
-import com.android.internal.telephony.cat.Input;
-import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.CatCmdMessage;
 import com.android.internal.telephony.cat.CatCmdMessage.BrowserSettings;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
+import com.android.internal.telephony.cat.Input;
+import com.android.internal.telephony.cat.Item;
+import com.android.internal.telephony.cat.Menu;
+import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.TextMessage;
+
+import com.android.internal.telephony.TelephonyConstants;
+import com.android.internal.telephony.IccCardConstants;
+import com.android.internal.telephony.TelephonyIntents;
+import com.android.internal.telephony.TelephonyIntents2;
 
 import java.util.LinkedList;
 
@@ -143,9 +150,62 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
+        public void onReceive(Context context, Intent intent) {
+            log("got intent: " + intent);
+            String action = intent.getAction();
+            if (ACTION_RIL_SWITCHING.equals(action)) {
+                reset();
+            } else if (TelephonyIntents.ACTION_SIM_STATE_CHANGED.equals(action)
+                  || TelephonyIntents2.ACTION_SIM_STATE_CHANGED.equals(action)) {
+                final int slotId = intent.getIntExtra("slot", 0);
+                if (!StkApp.isMsgForMe(slotId)) {
+                    log("ignore msg from slot:" + slotId);
+                    return;
+                }
+
+
+                String stateExtra = intent.getStringExtra(IccCardConstants.INTENT_KEY_ICC_STATE);
+                if (stateExtra != null
+                        && IccCardConstants.INTENT_VALUE_ICC_ABSENT.equals(stateExtra)) {
+                    if (!removeMenu()) {
+                        mCurrentMenu = null;
+                    }
+                    handleSessionEnd();
+                    if (TelephonyConstants.IS_DSDS) {
+                        reset();
+                    }
+                }
+            }
+        }
+    };
+
+    AppInterface getStkService() {
+        return com.android.internal.telephony.cat.CatService.getInstanceBySlot(0);
+    }
+
+    void reset() {
+        mStkService = null;
+        mMainCmd = null;
+        mCurrentCmd = null;
+        mCurrentMenu = null;
+        lastSelectedItem = null;
+        mMenuIsVisibile = false;
+        mCmdInProgress = false;
+        mCmdsQ.clear();
+        launchBrowser = false;
+        mBrowserSettings = null;
+        log("reset stk app.");
+        StkAppInstaller.unInstall(mContext);
+    }
+
     @Override
     public void onCreate() {
         // Initialize members
+        // This can return null if StkService is not yet instantiated, but it's ok
+        // If this is null we will do getInstance before we need to use this
+        //mStkService = getStkService(); //kk_ignore
+
         mCmdsQ = new LinkedList<DelayedCmd>();
         Thread serviceThread = new Thread(null, this, "Stk App Service");
         serviceThread.start();
@@ -153,13 +213,18 @@ public class StkAppService extends Service implements Runnable {
         mNotificationManager = (NotificationManager) mContext
                 .getSystemService(Context.NOTIFICATION_SERVICE);
         sInstance = this;
+
+        final IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(ACTION_RIL_SWITCHING);
+        registerReceiver(mBroadcastReceiver, intentFilter);
     }
 
     @Override
     public void onStart(Intent intent, int startId) {
 
-        mStkService = com.android.internal.telephony.cat.CatService
-                .getInstance();
+        //mStkService = com.android.internal.telephony.cat.CatService
+        //        .getInstance();
+        mStkService = getStkService();
 
         if (mStkService == null) {
             stopSelf();
@@ -204,6 +269,7 @@ public class StkAppService extends Service implements Runnable {
     public void onDestroy() {
         waitForLooper();
         mServiceLooper.quit();
+        unregisterReceiver(mBroadcastReceiver);
     }
 
     @Override
@@ -310,9 +376,13 @@ public class StkAppService extends Service implements Runnable {
                 }
                 break;
             case OP_BOOT_COMPLETED:
-                CatLog.d(this, "OP_BOOT_COMPLETED");
+                log("OP_BOOT_COMPLETED");
                 if (mMainCmd == null) {
-                    StkAppInstaller.unInstall(mContext);
+                    if (TelephonyConstants.IS_DSDS) {
+                        reset();
+                    } else {
+                        StkAppInstaller.unInstall(mContext);
+                    }
                 }
                 break;
             case OP_DELAYED_MSG:
@@ -386,11 +456,17 @@ public class StkAppService extends Service implements Runnable {
         if (cmdMsg == null) {
             return;
         }
+
+        // Retrieve the CatService instance if not yet done
+        if (mStkService == null) {
+            mStkService = getStkService();
+        }
         // save local reference for state tracking.
         mCurrentCmd = cmdMsg;
         boolean waitForUsersResponse = true;
 
-        CatLog.d(this, cmdMsg.getCmdType().name());
+        log(cmdMsg.getCmdType().name());
+
         switch (cmdMsg.getCmdType()) {
         case DISPLAY_TEXT:
             TextMessage msg = cmdMsg.geTextMessage();
@@ -414,11 +490,15 @@ public class StkAppService extends Service implements Runnable {
             mMainCmd = mCurrentCmd;
             mCurrentMenu = cmdMsg.getMenu();
             if (removeMenu()) {
-                CatLog.d(this, "Uninstall App");
-                mCurrentMenu = null;
-                StkAppInstaller.unInstall(mContext);
+                log("Uninstall App");
+                if (TelephonyConstants.IS_DSDS) {
+                    reset();
+                } else {
+                    mCurrentMenu = null;
+                    StkAppInstaller.unInstall(mContext);
+                }
             } else {
-                CatLog.d(this, "Install App");
+                log("Install App");
                 StkAppInstaller.install(mContext);
             }
             if (mMenuIsVisibile) {
@@ -491,7 +571,7 @@ public class StkAppService extends Service implements Runnable {
             return;
         }
         if (mStkService == null) {
-            mStkService = com.android.internal.telephony.cat.CatService.getInstance();
+            mStkService = getStkService();
             if (mStkService == null) {
                 // This should never happen (we should be responding only to a message
                 // that arrived from StkService). It has to exist by this time
@@ -507,7 +587,7 @@ public class StkAppService extends Service implements Runnable {
 
         switch(args.getInt(RES_ID)) {
         case RES_ID_MENU_SELECTION:
-            CatLog.d(this, "RES_ID_MENU_SELECTION");
+            log("RES_ID_MENU_SELECTION");
             int menuSelection = args.getInt(MENU_SELECTION);
             switch(mCurrentCmd.getCmdType()) {
             case SET_UP_MENU:
@@ -523,7 +603,7 @@ public class StkAppService extends Service implements Runnable {
             }
             break;
         case RES_ID_INPUT:
-            CatLog.d(this, "RES_ID_INPUT");
+            log("RES_ID_INPUT");
             String input = args.getString(INPUT);
             Input cmdInput = mCurrentCmd.geInput();
             if (cmdInput != null && cmdInput.yesNo) {
@@ -540,7 +620,7 @@ public class StkAppService extends Service implements Runnable {
             }
             break;
         case RES_ID_CONFIRM:
-            CatLog.d(this, "RES_ID_CONFIRM");
+            log("RES_ID_CONFIRM");
             confirmed = args.getBoolean(CONFIRMATION);
             switch (mCurrentCmd.getCmdType()) {
             case DISPLAY_TEXT:
@@ -568,15 +648,15 @@ public class StkAppService extends Service implements Runnable {
             resMsg.setResultCode(ResultCode.OK);
             break;
         case RES_ID_BACKWARD:
-            CatLog.d(this, "RES_ID_BACKWARD");
+            log("RES_ID_BACKWARD");
             resMsg.setResultCode(ResultCode.BACKWARD_MOVE_BY_USER);
             break;
         case RES_ID_END_SESSION:
-            CatLog.d(this, "RES_ID_END_SESSION");
+            log("RES_ID_END_SESSION");
             resMsg.setResultCode(ResultCode.UICC_SESSION_TERM_BY_USER);
             break;
         case RES_ID_TIMEOUT:
-            CatLog.d(this, "RES_ID_TIMEOUT");
+            log("RES_ID_TIMEOUT");
             // GCF test-case 27.22.4.1.1 Expected Sequence 1.5 (DISPLAY TEXT,
             // Clear message after delay, successful) expects result code OK.
             // If the command qualifier specifies no user response is required
@@ -591,7 +671,7 @@ public class StkAppService extends Service implements Runnable {
             break;
         case RES_ID_CHOICE:
             int choice = args.getInt(CHOICE);
-            CatLog.d(this, "User Choice=" + choice);
+            log("User Choice=" + choice);
             switch (choice) {
                 case YES:
                     resMsg.setResultCode(ResultCode.OK);
@@ -609,7 +689,7 @@ public class StkAppService extends Service implements Runnable {
             break;
 
         default:
-            CatLog.d(this, "Unknown result id");
+            log("Unknown result id");
             return;
         }
         mStkService.onCmdResponse(resMsg);
@@ -722,12 +802,12 @@ public class StkAppService extends Service implements Runnable {
         Uri data = null;
 
         if (settings.url != null) {
-            CatLog.d(this, "settings.url = " + settings.url);
+            log("settings.url = " + settings.url);
             if ((settings.url.startsWith("http://") || (settings.url.startsWith("https://")))) {
                 data = Uri.parse(settings.url);
             } else {
                 String modifiedUrl = "http://" + settings.url;
-                CatLog.d(this, "modifiedUrl = " + modifiedUrl);
+                log("modifiedUrl = " + modifiedUrl);
                 data = Uri.parse(modifiedUrl);
             }
         }
@@ -737,7 +817,7 @@ public class StkAppService extends Service implements Runnable {
         } else {
             // if the command did not contain a URL,
             // launch the browser to the default homepage.
-            CatLog.d(this, "launch browser with default URL ");
+            log("launch browser with default URL ");
             intent = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN,
                     Intent.CATEGORY_APP_BROWSER);
         }
@@ -753,6 +833,8 @@ public class StkAppService extends Service implements Runnable {
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
             break;
+        default:
+            log("Unknown launch browser setting mode " + settings.mode);
         }
         // start browser activity
         startActivity(intent);
@@ -768,7 +850,7 @@ public class StkAppService extends Service implements Runnable {
         TextMessage msg = mCurrentCmd.geTextMessage();
 
         if (msg == null) {
-            CatLog.d(this, "mCurrent.getTextMessage is NULL");
+            log("mCurrent.getTextMessage is NULL");
             mNotificationManager.cancel(STK_NOTIFICATION_ID);
             return;
         }
@@ -816,7 +898,7 @@ public class StkAppService extends Service implements Runnable {
     private void launchOpenChannelDialog() {
         TextMessage msg = mCurrentCmd.geTextMessage();
         if (msg == null) {
-            CatLog.d(this, "msg is null, return here");
+            log("msg is null, return here");
             return;
         }
 
@@ -868,7 +950,7 @@ public class StkAppService extends Service implements Runnable {
     private void launchTransientEventMessage() {
         TextMessage msg = mCurrentCmd.geTextMessage();
         if (msg == null) {
-            CatLog.d(this, "msg is null, return here");
+            log("msg is null, return here");
             return;
         }
 
@@ -915,9 +997,13 @@ public class StkAppService extends Service implements Runnable {
                 return true;
             }
         } catch (NullPointerException e) {
-            CatLog.d(this, "Unable to get Menu's items size");
+            log("Unable to get Menu's items size");
             return true;
         }
         return false;
+    }
+
+    private void log(String s) {
+        CatLog.d(this, "[STK1]" + s);
     }
 }

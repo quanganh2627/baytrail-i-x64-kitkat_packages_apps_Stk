@@ -16,12 +16,14 @@
 
 package com.android.stk;
 
-import com.android.internal.telephony.cat.AppInterface;
-
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+
+import com.android.internal.telephony.TelephonyConstants;
+import com.android.internal.telephony.cat.AppInterface;
+import com.android.internal.telephony.cat.CatLog;
 
 /**
  * Receiver class to get STK intents, broadcasted by telephony layer.
@@ -31,6 +33,14 @@ public class StkCmdReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
+
+        int slotId = intent.getIntExtra(TelephonyConstants.EXTRA_SLOT, 0);
+        if (!StkApp.isMsgForMe(slotId)) {
+            CatLog.d(this, "STK1, ignore msg from SLOT: " + slotId);
+            return;
+        }
+        CatLog.d(this, "STK1 accepts msg for SLOT: " + slotId);
+
         String action = intent.getAction();
 
         if (action.equals(AppInterface.CAT_CMD_ACTION)) {

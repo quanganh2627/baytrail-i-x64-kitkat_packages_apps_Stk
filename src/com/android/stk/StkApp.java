@@ -17,8 +17,12 @@
 package com.android.stk;
 
 import android.app.Application;
+import android.content.Context;
+import android.telephony.TelephonyManager;
 
 import com.android.internal.telephony.cat.Duration;
+import com.android.internal.telephony.TelephonyConstants;
+import android.util.Log;
 
 /**
  * Top-level Application class for STK app.
@@ -67,4 +71,25 @@ abstract class StkApp extends Application {
         }
         return timeout;
     }
+
+    public static int getPrimaryId(Context context) {
+        return TelephonyManager.getPrimarySim();
+    }
+
+    public static boolean isMsgForMe(int slotId) {
+        if (!TelephonyConstants.IS_DSDS) {
+            return true;
+        }
+        return slotId == TelephonyConstants.DSDS_SLOT_1_ID;
+    }
+
+    public static boolean isPrimaryOnSim1(Context context) {
+        if (!TelephonyConstants.IS_DSDS) {
+            return true;
+        }
+
+        final int primarySlotId = StkApp.getPrimaryId(context);
+        return primarySlotId == TelephonyConstants.DSDS_SLOT_1_ID;
+    }
+
 }

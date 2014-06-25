@@ -16,9 +16,13 @@
 
 package com.android.stk;
 
+import static com.android.internal.telephony.TelephonyConstants.ACTION_RIL_SWITCHING;
+
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.drawable.BitmapDrawable;
 import android.os.Bundle;
 import android.os.Handler;
@@ -33,10 +37,11 @@ import android.view.MenuItem;
 import android.view.View;
 import android.view.Window;
 import android.widget.Button;
-import android.widget.TextView;
 import android.widget.EditText;
+import android.widget.TextView;
 import android.widget.TextView.BufferType;
 
+import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.FontSize;
 import com.android.internal.telephony.cat.Input;
 
@@ -69,6 +74,8 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
 
     // message id for time out
     private static final int MSG_ID_TIMEOUT = 1;
+
+    private boolean  hasRegistered = false;
 
     Handler mTimeoutHandler = new Handler() {
         @Override
@@ -147,6 +154,11 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
             finish();
         }
         mContext = getBaseContext();
+
+        IntentFilter filter = new IntentFilter();
+        filter.addAction(ACTION_RIL_SWITCHING);
+        registerReceiver(mBroadcastReceiver, filter);
+        hasRegistered = true;
     }
 
     @Override
@@ -161,6 +173,15 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
         super.onResume();
 
         startTimeOut();
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        CatLog.d(this, "STK1, onDestroy");
+        if (hasRegistered) {
+            unregisterReceiver(mBroadcastReceiver);
+        }
     }
 
     @Override
@@ -330,4 +351,12 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
 
         return fontSizes[size.ordinal()];
     }
+
+    final BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            CatLog.d(this, "STK1,recv intent:" + intent.getAction());
+            finish();
+        }
+    };
 }
