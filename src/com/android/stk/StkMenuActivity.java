@@ -269,6 +269,7 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         switch (item.getItemId()) {
             case CONTEXT_MENU_HELP:
                 cancelTimeOut();
+                mAcceptUsersInput = false;
                 int position = info.position;
                 CatLog.d(this, "Position:" + position);
                 Item stkItem = getSelectedItem(position);
