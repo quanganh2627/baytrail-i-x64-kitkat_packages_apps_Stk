@@ -18,6 +18,10 @@ package com.android.stk;
 
 import static com.android.internal.telephony.TelephonyConstants.ACTION_RIL_SWITCHING;
 
+import android.app.Activity;
+import android.app.ActivityManager;
+import android.app.ActivityManager.RunningTaskInfo;
+import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
 import android.app.Notification;
 import android.app.NotificationManager;
@@ -27,6 +31,10 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.content.IntentFilter;
@@ -62,6 +70,7 @@ import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.TelephonyIntents2;
 
 import java.util.LinkedList;
+import java.util.List;
 
 /**
  * SIM toolkit application level service. Interacts with Telephopny messages,
@@ -124,6 +133,9 @@ public class StkAppService extends Service implements Runnable {
     static final int RES_ID_BACKWARD = 21;
     static final int RES_ID_END_SESSION = 22;
     static final int RES_ID_EXIT = 23;
+
+    // Additional information (see 3GPP TS 11.14 for details)
+    static final int ADDITIONAL_INFO_SCREEN_BUSY = 1;
 
     static final int YES = 1;
     static final int NO = 0;
@@ -469,9 +481,27 @@ public class StkAppService extends Service implements Runnable {
 
         switch (cmdMsg.getCmdType()) {
         case DISPLAY_TEXT:
+            if (mStkService == null) {
+                // If StkService is not yet available, simply returns.
+                return;
+            }
+            log("handle Display Text");
             TextMessage msg = cmdMsg.geTextMessage();
             responseNeeded = msg.responseNeeded;
             waitForUsersResponse = msg.responseNeeded;
+            if (!msg.isHighPriority) {
+                if (!isScreenAvailable()) {
+                    waitForUsersResponse = false;
+                    log("display text screen busy");
+                    CatResponseMessage resMsg =
+                            new CatResponseMessage(mCurrentCmd);
+                    resMsg.setResultCode(
+                            ResultCode.TERMINAL_CRNTLY_UNABLE_TO_PROCESS);
+                    resMsg.setAdditionalInfo(ADDITIONAL_INFO_SCREEN_BUSY);
+                    mStkService.onCmdResponse(resMsg);
+                    return;
+                }
+            }
             if (lastSelectedItem != null) {
                 msg.title = lastSelectedItem;
             } else if (mMainCmd != null){
@@ -1001,6 +1031,44 @@ public class StkAppService extends Service implements Runnable {
             return true;
         }
         return false;
+    }
+
+    private boolean isScreenAvailable() {
+        ActivityManager am = (ActivityManager)mContext
+                .getSystemService(Activity.ACTIVITY_SERVICE);
+        boolean screenAvailable = false;
+        
+        log("check isScreenAvailable");
+
+        if (am == null) {
+            return screenAvailable;
+        }
+
+        List<RunningTaskInfo> tasks = am.getRunningTasks(1);
+        if (tasks != null && tasks.size() > 0) {
+            String packName = tasks.get(0).topActivity.getPackageName();
+            if (packName.equals(PACKAGE_NAME)) {
+                screenAvailable = true;
+                log("stk on top");
+            } else {
+                PackageManager pm = getPackageManager();
+                Intent homeIntent = new Intent(Intent.ACTION_MAIN, null);
+                homeIntent.addCategory(Intent.CATEGORY_HOME);
+                List<ResolveInfo> mApps;
+                mApps = pm.queryIntentActivities(homeIntent, 0);
+
+                for (ResolveInfo info : mApps) {
+                    ActivityInfo activity = info.activityInfo;
+                    if (activity.packageName.equals(packName)) {
+                        screenAvailable = true;
+                        log("home on top");
+                        break;
+                    }
+                }
+            }
+        } 
+		log("screen available: "+screenAvailable);
+        return screenAvailable;
     }
 
     private void log(String s) {
