@@ -808,7 +808,7 @@ public class StkAppService extends Service implements Runnable {
 
         toast.setView(v);
         toast.setDuration(Toast.LENGTH_LONG);
-        toast.setGravity(Gravity.BOTTOM, 0, 0);
+        toast.setGravity(Gravity.CENTER, 0, 0);
         toast.show();
     }
 
