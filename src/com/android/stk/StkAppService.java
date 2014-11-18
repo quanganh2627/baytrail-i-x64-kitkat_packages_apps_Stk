@@ -23,6 +23,8 @@ import android.app.ActivityManager;
 import android.app.ActivityManager.RunningTaskInfo;
 import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
+import android.app.IActivityManager;
+import android.app.IProcessObserver;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -44,6 +46,9 @@ import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
+import android.os.RemoteException;
+import android.provider.Browser;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -53,9 +58,11 @@ import android.widget.RemoteViews;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.android.internal.telephony.cat.CatService;
 import com.android.internal.telephony.cat.AppInterface;
 import com.android.internal.telephony.cat.CatCmdMessage;
 import com.android.internal.telephony.cat.CatCmdMessage.BrowserSettings;
+import com.android.internal.telephony.cat.CatEventMessage;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
 import com.android.internal.telephony.cat.Input;
@@ -63,6 +70,8 @@ import com.android.internal.telephony.cat.Item;
 import com.android.internal.telephony.cat.Menu;
 import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.TextMessage;
+import com.android.internal.telephony.cat.EventCode;
+import com.android.internal.telephony.cat.ComprehensionTlvTag;
 
 import com.android.internal.telephony.TelephonyConstants;
 import com.android.internal.telephony.IccCardConstants;
@@ -92,6 +101,7 @@ public class StkAppService extends Service implements Runnable {
     private boolean responseNeeded = true;
     private boolean mCmdInProgress = false;
     private NotificationManager mNotificationManager = null;
+    private IActivityManager mActivityManager;
     private LinkedList<DelayedCmd> mCmdsQ = null;
     private boolean launchBrowser = false;
     private BrowserSettings mBrowserSettings = null;
@@ -121,6 +131,7 @@ public class StkAppService extends Service implements Runnable {
     static final int OP_END_SESSION = 4;
     static final int OP_BOOT_COMPLETED = 5;
     private static final int OP_DELAYED_MSG = 6;
+	static final int OP_USER_ACTIVITY = 7;
 
     // Response ids
     static final int RES_ID_MENU_SELECTION = 11;
@@ -136,7 +147,7 @@ public class StkAppService extends Service implements Runnable {
 
     // Additional information (see 3GPP TS 11.14 for details)
     static final int ADDITIONAL_INFO_SCREEN_BUSY = 1;
-
+    static final int STK_BROWSER_UNAVAILABLE = 0x02;
     static final int YES = 1;
     static final int NO = 0;
 
@@ -145,6 +156,9 @@ public class StkAppService extends Service implements Runnable {
                                         PACKAGE_NAME + ".StkMenuActivity";
     private static final String INPUT_ACTIVITY_NAME =
                                         PACKAGE_NAME + ".StkInputActivity";
+
+    private static final String SHOW_ALL_APPS = "com.android.launcher.SHOW_ALL_APPS";
+    private static final String CLOSE_ALL_APPS = "com.android.launcher.CLOSE_ALL_APPS";
 
     // Notification id used to display Idle Mode text in NotificationManager.
     private static final int STK_NOTIFICATION_ID = 333;
@@ -162,6 +176,42 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private IProcessObserver mProcessObserver = new IProcessObserver.Stub() {
+        @Override
+        public void onForegroundActivitiesChanged(int pid,
+                int uid, boolean foregroundActivities) {
+            String appName = mContext.getPackageManager().getNameForUid(uid);
+            if (foregroundActivities) {
+                if (!mAllAppsShown
+                        && appName != null && appName.contains("com.android.launcher")) {
+                    updateIdleScreenAvailable();
+                }
+            } else {
+                // The browser app must be present in the system as com.android.browser
+                // and this works only with the Android default browser package.
+                // Note: Needs to be modified to work with other browsers.
+                if (appName.contains("com.android.browser")) {
+                    if (mStkService != null) {
+                        if (mStkService.isEventDownloadActive(
+                                EventCode.BROWSER_TERMINATION.value())) {
+                            sendBrowserTerminationEvent();
+                        }
+                    }
+                }
+            }
+        }
+
+        @Override
+        public void onImportanceChanged(int pid, int uid, int importance) {
+        }
+
+        @Override
+        public void onProcessDied(int pid, int uid) {
+        }
+    };
+
+    private BroadcastReceiver mStkCmdReceiver = new StkCmdReceiver();
+    private boolean mAllAppsShown = false;
     private BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
             log("got intent: " + intent);
@@ -229,6 +279,13 @@ public class StkAppService extends Service implements Runnable {
         final IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(ACTION_RIL_SWITCHING);
         registerReceiver(mBroadcastReceiver, intentFilter);
+        final IntentFilter stkCmdFilter = new IntentFilter();
+        stkCmdFilter.addAction(AppInterface.CAT_CMD_ACTION);
+        stkCmdFilter.addAction(AppInterface.CAT_SESSION_END_ACTION);
+        stkCmdFilter.addAction(AppInterface.USER_ACTIVITY_AVAILABLE_ACTION);
+        registerReceiver(mStkCmdReceiver, stkCmdFilter);
+
+        mActivityManager = ActivityManagerNative.getDefault();
     }
 
     @Override
@@ -270,6 +327,7 @@ public class StkAppService extends Service implements Runnable {
         case OP_LAUNCH_APP:
         case OP_END_SESSION:
         case OP_BOOT_COMPLETED:
+        case OP_USER_ACTIVITY:
             break;
         default:
             return;
@@ -282,6 +340,8 @@ public class StkAppService extends Service implements Runnable {
         waitForLooper();
         mServiceLooper.quit();
         unregisterReceiver(mBroadcastReceiver);
+        unregisterReceiver(mStkCmdReceiver);
+        unregisterProcessObserverIfNotNeeded();
     }
 
     @Override
@@ -400,6 +460,10 @@ public class StkAppService extends Service implements Runnable {
             case OP_DELAYED_MSG:
                 handleDelayedCmd();
                 break;
+            case OP_USER_ACTIVITY:
+                log("OP_USER_ACTIVITY");
+                updateUserActivityAvailable();
+                break;
             }
         }
     }
@@ -415,6 +479,7 @@ public class StkAppService extends Service implements Runnable {
         case CLOSE_CHANNEL:
         case RECEIVE_DATA:
         case SEND_DATA:
+        case SET_UP_EVENT_LIST:
             return false;
         }
 
@@ -584,6 +649,10 @@ public class StkAppService extends Service implements Runnable {
              * Display indication in the form of a toast to the user if required.
              */
             launchEventMessage();
+            break;
+        case SET_UP_EVENT_LIST:
+            waitForUsersResponse = false;
+            processSetupEventList();
             break;
         }
 
@@ -1069,6 +1138,98 @@ public class StkAppService extends Service implements Runnable {
         } 
 		log("screen available: "+screenAvailable);
         return screenAvailable;
+    }
+
+    private void processSetupEventList() {
+        boolean registerProcessObserver;
+
+        if (mStkService != null) {
+            registerProcessObserver = false;
+            if (mStkService.isEventDownloadActive(EventCode.USER_ACTIVITY.value())) {
+                registerForUserActivityIfNeeded(true);
+            }
+
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())) {
+                registerProcessObserver = true;
+            }
+
+            if (mStkService.isEventDownloadActive(EventCode.BROWSER_TERMINATION.value())) {
+                registerProcessObserver = true;
+            }
+        } else {
+            registerProcessObserver = false;
+        }
+
+        try {
+            if (registerProcessObserver) {
+                mActivityManager.registerProcessObserver(mProcessObserver);
+            } else {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+            }
+        } catch (RemoteException e) {
+            log("Error registering/unregistering ProcessObserver");
+        }
+    }
+
+    private void unregisterProcessObserverIfNotNeeded() {
+        boolean unregisterProcessObserver;
+        if (mStkService != null) {
+            if (mStkService.isEventDownloadActive(EventCode.IDLE_SCREEN_AVAILABLE.value())
+                    || mStkService.isEventDownloadActive(
+                            EventCode.BROWSER_TERMINATION.value())) {
+                unregisterProcessObserver = false;
+            } else {
+                unregisterProcessObserver = true;
+            }
+        } else {
+            unregisterProcessObserver = true;
+        }
+
+        if (unregisterProcessObserver) {
+            try {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+            } catch (RemoteException e) {
+                log("Error unregistering ProcessObserver");
+            }
+        }
+    }
+
+    private void updateIdleScreenAvailable() {
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.IDLE_SCREEN_AVAILABLE.value(),
+                    0x02, //  static final int DEV_ID_DISPLAY     = 0x02;
+                    0x81, null, true)); //    static final int DEV_ID_UICC        = 0x81;
+        }
+
+        unregisterProcessObserverIfNotNeeded();
+    }
+
+    private void updateUserActivityAvailable() {
+        if (mStkService != null) {
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.USER_ACTIVITY.value(), null, true));
+            registerForUserActivityIfNeeded(false);
+        }
+    }
+    private void registerForUserActivityIfNeeded(boolean status) {
+        Intent launcherIntent = new Intent(AppInterface.CHECK_USER_ACTIVITY_ACTION);
+        launcherIntent.putExtra("STK_USER_ACTIVITY_REQUEST", status);
+        sendBroadcast(launcherIntent);
+    }
+
+    private void sendBrowserTerminationEvent() {
+        if (mStkService != null) {
+            byte[] additionalInfo = {
+                    (byte)ComprehensionTlvTag.BROWSER_TERMINATION_CAUSE.value(),
+                    0x01, // length
+                    0x00 // user termination
+                    };
+
+            mStkService.onEventDownload(new CatEventMessage(
+                    EventCode.BROWSER_TERMINATION.value(),
+                    additionalInfo, false));
+        }
     }
 
     private void log(String s) {

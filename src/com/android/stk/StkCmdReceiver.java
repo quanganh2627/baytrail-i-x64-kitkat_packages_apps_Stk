@@ -65,4 +65,11 @@ public class StkCmdReceiver extends BroadcastReceiver {
         context.startService(new Intent(context, StkAppService.class)
                 .putExtras(args));
     }
+
+    private void handleUserActivityAvailable(Context context, Intent intent) {
+        Bundle args = new Bundle();
+        args.putInt(StkAppService.OPCODE, StkAppService.OP_USER_ACTIVITY);
+        context.startService(new Intent(context, StkAppService.class)
+                .putExtras(args));
+    }
 }
