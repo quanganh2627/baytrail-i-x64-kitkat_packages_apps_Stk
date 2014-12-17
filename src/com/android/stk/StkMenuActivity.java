@@ -35,6 +35,8 @@ import android.widget.ListView;
 import android.widget.ProgressBar;
 import android.widget.TextView;
 
+import android.graphics.Color;
+
 import com.android.internal.telephony.cat.Item;
 import com.android.internal.telephony.cat.Menu;
 import com.android.internal.telephony.cat.CatLog;
@@ -45,7 +47,8 @@ import com.android.internal.telephony.cat.CatLog;
  * menu content.
  *
  */
-public class StkMenuActivity extends ListActivity implements View.OnCreateContextMenuListener {
+public class StkMenuActivity extends ListActivity
+        implements View.OnCreateContextMenuListener, AdapterView.OnItemLongClickListener {
     private Context mContext;
     private Menu mStkMenu = null;
     private int mState = STATE_MAIN;
@@ -64,6 +67,9 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
     // message id for time out
     private static final int MSG_ID_TIMEOUT = 1;
     private static final int CONTEXT_MENU_HELP = 0;
+
+    private int mLongPressedPosition = 0;
+    private View mLongPressedView = null;
 
     Handler mTimeoutHandler = new Handler() {
         @Override
@@ -100,6 +106,8 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
 
         initFromIntent(getIntent());
         mAcceptUsersInput = true;
+
+        getListView().setOnItemLongClickListener(this);
     }
 
     @Override
@@ -128,6 +136,21 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         mAcceptUsersInput = false;
         mProgressView.setVisibility(View.VISIBLE);
         mProgressView.setIndeterminate(true);
+    }
+
+    public boolean onItemLongClick(AdapterView<?> parent, View view, int position, long id) {
+        CatLog.d(this, "onItemLongClick, position:"+position+", id:"+id);
+
+        if(mLongPressedView != null){
+            mLongPressedView.setBackgroundColor(android.R.attr.colorBackground);
+        }
+
+        view.setBackgroundColor(Color.GRAY);
+
+        mLongPressedView = view;
+        mLongPressedPosition = position;
+
+        return true;
     }
 
     @Override
@@ -237,7 +260,13 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
             int position = getSelectedItemPosition();
             Item stkItem = getSelectedItem(position);
             if (stkItem == null) {
-                break;
+                CatLog.d(this, "stkItem null, SelectedItemPosition is "+position);
+
+                stkItem = getSelectedItem(mLongPressedPosition);
+                if(stkItem == null){
+                    CatLog.d(this, "stkItem null, mLongPressedPosition is "+position);
+                    break;
+                }
             }
             // send help needed response.
             sendResponse(StkAppService.RES_ID_MENU_SELECTION, stkItem.id, true);
@@ -354,13 +383,15 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
                 item = mStkMenu.items.get(position);
             } catch (IndexOutOfBoundsException e) {
                 if (StkApp.DBG) {
-                    CatLog.d(this, "Invalid menu");
+                    CatLog.d(this, "Invalid menu " + e.toString());
                 }
             } catch (NullPointerException e) {
                 if (StkApp.DBG) {
-                    CatLog.d(this, "Invalid menu");
+                    CatLog.d(this, "Invalid menu " + e.toString());
                 }
             }
+        } else {
+            CatLog.d(this, "getSelectedItem mStkMenu null");
         }
         return item;
     }
