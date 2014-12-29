@@ -34,7 +34,11 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
 import android.net.Uri;
+import android.os.AsyncResult;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
@@ -63,9 +67,11 @@ import com.android.internal.telephony.cat.LaunchBrowserMode;
 import com.android.internal.telephony.cat.Menu;
 import com.android.internal.telephony.cat.Item;
 import com.android.internal.telephony.cat.Input;
+import com.android.internal.telephony.cat.ResultAddInfoForLaunchBrowser;
 import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.CatCmdMessage;
 import com.android.internal.telephony.cat.CatCmdMessage.BrowserSettings;
+import com.android.internal.telephony.cat.CatNetworkConnManager;
 import com.android.internal.telephony.cat.CatCmdMessage.SetupEventListSettings;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
@@ -164,6 +170,9 @@ public class StkAppService extends Service implements Runnable {
     private PowerManager mPowerManager = null;
     private StkCmdReceiver mStkCmdReceiver = null;
 
+    private CatNetworkConnManager mConnManager = null;
+    private volatile NetworkRequestHandler mNetworkHandler = null;
+
     // Used for setting FLAG_ACTIVITY_NO_USER_ACTION when
     // creating an intent.
     private enum InitiatedByUserAction {
@@ -251,6 +260,34 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private final class NetworkRequestHandler extends Handler {
+
+        private int mSlotId;
+        public void setSlotId(int id) {
+            mSlotId = id;
+        }
+        @Override
+        public void handleMessage(Message msg) {
+            CatResponseMessage resMsg = (CatResponseMessage)(AsyncResult.forMessage(msg)).userObj;
+            switch (msg.what) {
+                case CatNetworkConnManager.MSG_ID_NETWORK_REQUEST_SUCCESS:
+                    mStkService[mSlotId].onCmdResponse(resMsg);
+                    break;
+                case CatNetworkConnManager.MSG_ID_NETWORK_REQUEST_FAILED:
+                    mStkContext[mSlotId].mCmdInProgress = false;
+                    mStkContext[mSlotId].launchBrowser = false;
+                    mStkContext[mSlotId].mBrowserSettings = null;
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(
+                            ResultAddInfoForLaunchBrowser.BEARER_UNAVAILABLE.value());
+                    mStkService[mSlotId].onCmdResponse(resMsg);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     @Override
     public void onCreate() {
         CatLog.d(LOG_TAG, "onCreate()+");
@@ -276,6 +313,8 @@ public class StkAppService extends Service implements Runnable {
         serviceThread.start();
         mNotificationManager = (NotificationManager) mContext
                 .getSystemService(Context.NOTIFICATION_SERVICE);
+        mConnManager = CatNetworkConnManager.getInstance(mContext);
+        mNetworkHandler = new NetworkRequestHandler();
         sInstance = this;
     }
 
@@ -371,7 +410,6 @@ public class StkAppService extends Service implements Runnable {
 
         mServiceLooper = Looper.myLooper();
         mServiceHandler = new ServiceHandler();
-
         Looper.loop();
     }
 
@@ -929,8 +967,15 @@ public class StkAppService extends Service implements Runnable {
                 mStkContext[slotId].launchBrowser = true;
                 mStkContext[slotId].mBrowserSettings
                         = mStkContext[slotId].mCurrentCmd.getBrowserSettings();
-                mStkContext[slotId].mCmdInProgress = false;
-                mStkService[slotId].onCmdResponse(resMsg);
+                if (startNetworkConnection(resMsg, slotId) == false) {
+                    mStkContext[slotId].mCmdInProgress = false;
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(
+                            ResultAddInfoForLaunchBrowser.BEARER_UNAVAILABLE.value());
+                    mStkService[slotId].onCmdResponse(resMsg);
+                } else {
+                    CatLog.d(this, "Waiting for network connection");
+                }
                 return;
             }
             break;
@@ -989,6 +1034,20 @@ public class StkAppService extends Service implements Runnable {
             } else {
                 mStkContext[slotId].mCmdInProgress = false;
             }
+        }
+    }
+
+    private boolean startNetworkConnection(Object response, int slotId) {
+        if (mConnManager != null && mNetworkHandler != null) {
+            mNetworkHandler.setSlotId(slotId);
+            mConnManager.buildNetworkRequest(
+                    NetworkCapabilities.TRANSPORT_CELLULAR,
+                    NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            mConnManager.acquireNetworkAsync(mNetworkHandler, response, true);
+            return true;
+        } else {
+            CatLog.d(this, "LAUNCH_BROWSER: startNetworkConnection Failed");
+            return false;
         }
     }
 
@@ -1061,10 +1120,20 @@ public class StkAppService extends Service implements Runnable {
                 resMsg.setConfirmation(confirmed);
                 resMsg.setResultCode(confirmed ? ResultCode.OK
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
-                if (confirmed) {
-                    mStkContext[slotId].launchBrowser = true;
-                    mStkContext[slotId].mBrowserSettings =
-                            mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                // start the connection here
+                if( startNetworkConnection(resMsg, slotId) != true) {
+                    // overwrite the res code
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(
+                             ResultAddInfoForLaunchBrowser.BEARER_UNAVAILABLE.value());
+                } else {
+                    if (confirmed) {
+                        mStkContext[slotId].launchBrowser = true;
+                        mStkContext[slotId].mBrowserSettings =
+                                mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                    }
+                    CatLog.d(this, "LAUNCH_BROWSER: Waiting network connection");
+                    return;
                 }
                 break;
             case SET_UP_CALL:
