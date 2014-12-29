@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Intel Mobile Communications GmbH
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,6 +41,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
+import android.provider.Browser;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.view.Gravity;
@@ -909,7 +911,27 @@ public class StkAppService extends Service implements Runnable {
             launchEventMessage(slotId);
             break;
         case LAUNCH_BROWSER:
-            launchConfirmationDialog(mStkContext[slotId].mCurrentCmd.geTextMessage(), slotId);
+            /* Per 3GPP specification 102.223 the terminal shall ask
+             * the user for confirmation if the alpha identifier is
+             * present and if the launch browser command requests the
+             * existing browser session connected to a new URL.
+             *
+             * As we support tabulation, we ask the user for confirmation
+             * only if the alpha identifier is present.
+             */
+            if (mStkContext[slotId].mCurrentCmd.geTextMessage().text != null) {
+                launchConfirmationDialog(mStkContext[slotId].mCurrentCmd.geTextMessage(), slotId);
+            } else {
+                CatResponseMessage resMsg =
+                        new CatResponseMessage(mStkContext[slotId].mCurrentCmd);
+                resMsg.setConfirmation(true);
+                resMsg.setResultCode(ResultCode.OK);
+                mStkContext[slotId].launchBrowser = true;
+                mStkContext[slotId].mBrowserSettings
+                        = mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                mStkService[slotId].onCmdResponse(resMsg);
+                return;
+            }
             break;
         case SET_UP_CALL:
             TextMessage mesg = mStkContext[slotId].mCurrentCmd.getCallSettings().confirmMsg;
@@ -1035,6 +1057,7 @@ public class StkAppService extends Service implements Runnable {
                     : ResultCode.UICC_SESSION_TERM_BY_USER);
                 break;
             case LAUNCH_BROWSER:
+                resMsg.setConfirmation(confirmed);
                 resMsg.setResultCode(confirmed ? ResultCode.OK
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
                 if (confirmed) {
@@ -1476,6 +1499,7 @@ public class StkAppService extends Service implements Runnable {
             break;
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true);
             break;
         }
         // start browser activity
