@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Intel Mobile Communications GmbH
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not
@@ -16,10 +17,12 @@
 
 package com.android.stk;
 
+import android.app.ActionBar;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.ColorDrawable;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
@@ -60,6 +63,8 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
 
     private Input mStkInput = null;
     private boolean mAcceptUsersInput = true;
+    private ActionBar mActionBar = null;
+
     // Constants
     private static final int STATE_TEXT = 1;
     private static final int STATE_YES_NO = 2;
@@ -141,6 +146,7 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
         // Initialize members
         mTextIn = (EditText) this.findViewById(R.id.in_text);
         mPromptView = (TextView) this.findViewById(R.id.prompt);
+        mActionBar = getActionBar();
         mInstance = this;
         // Set buttons listeners.
         Button okButton = (Button) findViewById(R.id.button_ok);
@@ -347,6 +353,7 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
     }
 
     private void configInputDisplay() {
+        CatLog.d(LOG_TAG, "configInputDisplay");
         TextView numOfCharsView = (TextView) findViewById(R.id.num_of_chars);
         TextView inTypeView = (TextView) findViewById(R.id.input_type);
 
@@ -362,9 +369,13 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
         }
         inTypeView.setText(inTypeId);
 
-        if (mStkInput.icon != null) {
-            setFeatureDrawable(Window.FEATURE_LEFT_ICON, new BitmapDrawable(
-                    mStkInput.icon));
+        if (mStkInput.icon != null &&  mActionBar != null) {
+            CatLog.d(LOG_TAG, "setting action bar icon");
+            mActionBar.setIcon(new BitmapDrawable(getResources(), mStkInput.icon));
+        } else if (mActionBar != null) {
+            CatLog.d(LOG_TAG, "setting action bar icon as transparent");
+            mActionBar.setIcon(new ColorDrawable(
+                    getResources().getColor(android.R.color.transparent)));
         }
 
         // Handle specific global and text attributes.
