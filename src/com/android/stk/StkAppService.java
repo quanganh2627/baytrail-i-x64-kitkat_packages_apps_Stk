@@ -1555,7 +1555,15 @@ public class StkAppService extends Service implements Runnable {
             }
             notificationBuilder.setColor(mContext.getResources().getColor(
                     com.android.internal.R.color.system_notification_accent_color));
-            mNotificationManager.notify(getNotificationId(slotId), notificationBuilder.build());
+
+            Notification.BigTextStyle notifBigTextStyle =
+                    new Notification.BigTextStyle(notificationBuilder);
+            if (notifBigTextStyle != null) {
+                notifBigTextStyle.bigText(msg.text);
+                mNotificationManager.notify(getNotificationId(slotId), notifBigTextStyle.build());
+            } else {
+                mNotificationManager.notify(getNotificationId(slotId), notificationBuilder.build());
+            }
         }
     }
 
