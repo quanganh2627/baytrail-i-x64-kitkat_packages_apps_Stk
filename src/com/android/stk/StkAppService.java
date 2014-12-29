@@ -929,6 +929,7 @@ public class StkAppService extends Service implements Runnable {
                 mStkContext[slotId].launchBrowser = true;
                 mStkContext[slotId].mBrowserSettings
                         = mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                mStkContext[slotId].mCmdInProgress = false;
                 mStkService[slotId].onCmdResponse(resMsg);
                 return;
             }
