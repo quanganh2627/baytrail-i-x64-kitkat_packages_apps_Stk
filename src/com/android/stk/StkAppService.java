@@ -1076,6 +1076,10 @@ public class StkAppService extends Service implements Runnable {
                             mStkContext[slotId].mCurrentCmd.getCallSettings().callMsg);
                 }
                 break;
+            case OPEN_CHANNEL:
+                resMsg.setResultCode(confirmed ? ResultCode.OK : ResultCode.USER_NOT_ACCEPT);
+                resMsg.setConfirmation(confirmed);
+                break;
             }
             break;
         case RES_ID_DONE:
