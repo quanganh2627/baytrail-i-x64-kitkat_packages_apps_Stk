@@ -39,14 +39,16 @@ public class StkCmdReceiver extends BroadcastReceiver {
             CatLog.d(this, "STK1, ignore msg from SLOT: " + slotId);
             return;
         }
-        CatLog.d(this, "STK1 accepts msg for SLOT: " + slotId);
 
         String action = intent.getAction();
+        CatLog.d(this, "STK1 accepts msg for SLOT: " + slotId + "; action: " +action);
 
         if (action.equals(AppInterface.CAT_CMD_ACTION)) {
             handleCommandMessage(context, intent);
         } else if (action.equals(AppInterface.CAT_SESSION_END_ACTION)) {
             handleSessionEnd(context, intent);
+        } else if (action.equals(AppInterface.USER_ACTIVITY_AVAILABLE_ACTION)) {
+            handleUserActivityAvailable(context, intent);
         }
     }
 
