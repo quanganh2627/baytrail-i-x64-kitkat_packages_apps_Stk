@@ -19,7 +19,10 @@ package com.android.stk;
 
 import android.app.ActivityManager;
 import android.app.ActivityManager.RunningTaskInfo;
+import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
+import android.app.IActivityManager;
+import android.app.IProcessObserver;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -45,6 +48,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
+import android.os.RemoteException;
 import android.provider.Browser;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
@@ -75,6 +79,7 @@ import com.android.internal.telephony.cat.CatNetworkConnManager;
 import com.android.internal.telephony.cat.CatCmdMessage.SetupEventListSettings;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
+import com.android.internal.telephony.cat.ComprehensionTlvTag;
 import com.android.internal.telephony.cat.TextMessage;
 import com.android.internal.telephony.uicc.IccRefreshResponse;
 import com.android.internal.telephony.uicc.IccCardStatus.CardState;
@@ -89,6 +94,8 @@ import java.util.LinkedList;
 import java.lang.System;
 import java.util.List;
 
+import static com.android.internal.telephony.cat.CatCmdMessage.
+                   SetupEventListConstants.BROWSER_TERMINATION_EVENT;
 import static com.android.internal.telephony.cat.CatCmdMessage.
                    SetupEventListConstants.IDLE_SCREEN_AVAILABLE_EVENT;
 import static com.android.internal.telephony.cat.CatCmdMessage.
@@ -172,6 +179,9 @@ public class StkAppService extends Service implements Runnable {
 
     private CatNetworkConnManager mConnManager = null;
     private volatile NetworkRequestHandler mNetworkHandler = null;
+    private IActivityManager mActivityManager = null;
+    private boolean mIsActiveProcessObs = false;
+    private boolean mIsWaitingForProcessToActive = false;
 
     // Used for setting FLAG_ACTIVITY_NO_USER_ACTION when
     // creating an intent.
@@ -260,6 +270,45 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private IProcessObserver mProcessObserver = new IProcessObserver.Stub() {
+        @Override
+        public void onForegroundActivitiesChanged(int pid, int uid, boolean foregroundActivities) {
+        }
+
+        @Override
+        public void onProcessStateChanged(int pid, int uid, int procState) {
+            String appName = mContext.getPackageManager().getNameForUid(uid);
+            // The browser app must be present in the system as com.android.browser
+            // or com.android.chrome. Note: Needs to be modified to work with other browsers.
+            if ((appName.contains("com.android.browser")
+                    || appName.contains("com.android.chrome"))) {
+                if ((ActivityManager.PROCESS_STATE_CACHED_EMPTY == procState
+                        || ActivityManager.PROCESS_STATE_SERVICE == procState
+                        || ActivityManager.PROCESS_STATE_CACHED_ACTIVITY_CLIENT == procState)
+                        && !mIsWaitingForProcessToActive) {
+                    for (int slot = 0; slot < mSimCount; slot++) {
+                        if (mStkContext[slot] != null) {
+                            if (mStkContext[slot].mSetupEventListSettings != null) {
+                                for (int i : mStkContext[slot].mSetupEventListSettings.eventList) {
+                                    if (BROWSER_TERMINATION_EVENT == i) {
+                                        sendBrowserTerminationEvent(slot);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (ActivityManager.PROCESS_STATE_TOP == procState
+                        && mIsWaitingForProcessToActive) {
+                    mIsWaitingForProcessToActive = false;
+                }
+            }
+        }
+
+        @Override
+        public void onProcessDied(int pid, int uid) {
+        }
+    };
     private final class NetworkRequestHandler extends Handler {
 
         private int mSlotId;
@@ -271,6 +320,7 @@ public class StkAppService extends Service implements Runnable {
             CatResponseMessage resMsg = (CatResponseMessage)(AsyncResult.forMessage(msg)).userObj;
             switch (msg.what) {
                 case CatNetworkConnManager.MSG_ID_NETWORK_REQUEST_SUCCESS:
+                    mStkContext[mSlotId].mCmdInProgress = false;
                     mStkService[mSlotId].onCmdResponse(resMsg);
                     break;
                 case CatNetworkConnManager.MSG_ID_NETWORK_REQUEST_FAILED:
@@ -315,6 +365,7 @@ public class StkAppService extends Service implements Runnable {
                 .getSystemService(Context.NOTIFICATION_SERVICE);
         mConnManager = CatNetworkConnManager.getInstance(mContext);
         mNetworkHandler = new NetworkRequestHandler();
+        mActivityManager = ActivityManagerNative.getDefault();
         sInstance = this;
     }
 
@@ -391,6 +442,13 @@ public class StkAppService extends Service implements Runnable {
     @Override
     public void onDestroy() {
         CatLog.d(LOG_TAG, "onDestroy()");
+        if (mIsActiveProcessObs) {
+            try {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+                mIsActiveProcessObs = false;
+            } catch (RemoteException e) {
+            }
+        }
         if (mStkCmdReceiver != null) {
             unregisterReceiver(mStkCmdReceiver);
             mStkCmdReceiver = null;
@@ -635,6 +693,7 @@ public class StkAppService extends Service implements Runnable {
             CatLog.d(LOG_TAG, "CardStatus: " + cardStatus);
             if (cardStatus == false) {
                 CatLog.d(LOG_TAG, "CARD is ABSENT");
+                unregisterProcessObserver(slotId);
                 // Uninstall STKAPP, Clear Idle text, Stop StkAppService
                 mNotificationManager.cancel(getNotificationId(slotId));
                 if (isAllOtherCardsAbsent(slotId)) {
@@ -651,6 +710,7 @@ public class StkAppService extends Service implements Runnable {
                     (state.refreshResult == IccRefreshResponse.REFRESH_RESULT_RESET)) {
                     // Clear Idle Text
                     mNotificationManager.cancel(getNotificationId(slotId));
+                    unregisterProcessObserver(slotId);
                 }
 
                 if (state.refreshResult == IccRefreshResponse.REFRESH_RESULT_RESET) {
@@ -1024,6 +1084,10 @@ public class StkAppService extends Service implements Runnable {
             if (isScreenIdle()) {
                 CatLog.d(this," Check if IDLE_SCREEN_AVAILABLE_EVENT is present in List");
                 checkForSetupEvent(IDLE_SCREEN_AVAILABLE_EVENT, null, slotId);
+            }
+            if (!mIsActiveProcessObs) {
+                CatLog.d(this," Check if BROWSER_TERMINATION_EVENT is present in List");
+                checkForSetupEvent(BROWSER_TERMINATION_EVENT, null, slotId);
             }
             break;
         }
@@ -1419,10 +1483,35 @@ public class StkAppService extends Service implements Runnable {
         mStkService[slotId].onCmdResponse(resMsg);
     }
 
+    private void unregisterProcessObserver(int slotId) {
+        if (mStkContext[slotId].mSetupEventListSettings != null) {
+            for (int i : mStkContext[slotId].mSetupEventListSettings.eventList) {
+                if ((BROWSER_TERMINATION_EVENT == i) && mIsActiveProcessObs) {
+                    try {
+                        mActivityManager.unregisterProcessObserver(mProcessObserver);
+                        mIsActiveProcessObs = false;
+                    } catch (RemoteException e) {
+                        CatLog.d(this, "Error unregistering ProcessObserver");
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    private void sendBrowserTerminationEvent(int slotId) {
+        byte[] additionalInfo = {
+                (byte)ComprehensionTlvTag.BROWSER_TERMINATION_CAUSE.value(),
+                0x01, // length
+                0x00 // user termination
+                };
+        sendSetUpEventResponse(BROWSER_TERMINATION_EVENT, additionalInfo, slotId);
+    }
+
     private void checkForSetupEvent(int event, Bundle args, int slotId) {
         boolean eventPresent = false;
         byte[] addedInfo = null;
-        CatLog.d(this, "Event :" + event);
+        CatLog.d(this, "Event :" + event + " ActiveProcessObs: " + mIsActiveProcessObs);
 
         if (mStkContext[slotId].mSetupEventListSettings != null) {
             /* Checks if the event is present in the EventList updated by last
@@ -1453,11 +1542,33 @@ public class StkAppService extends Service implements Runnable {
                         addedInfo = GsmAlphabet.stringToGsm8BitPacked(language);
                         sendSetUpEventResponse(event, addedInfo, slotId);
                         break;
+                    case BROWSER_TERMINATION_EVENT:
+                        if (!mIsActiveProcessObs) {
+                            try {
+                                mActivityManager.registerProcessObserver(mProcessObserver);
+                                mIsActiveProcessObs = true;
+                            } catch(RemoteException e) {
+                                CatLog.d(this, "Error registering/unregistering ProcessObserver");
+                            }
+                        }
+                        break;
                     default:
                         break;
                 }
             } else {
                 CatLog.e(this, " Event does not exist in the EventList");
+                switch (event) {
+                    case BROWSER_TERMINATION_EVENT:
+                        if (mIsActiveProcessObs) {
+                            try {
+                                mActivityManager.unregisterProcessObserver(mProcessObserver);
+                                mIsActiveProcessObs = false;
+                            } catch (RemoteException e) {
+                                CatLog.d(this, "Error registering/unregistering ProcessObserver");
+                            }
+                        }
+                        break;
+                }
             }
         } else {
             CatLog.e(this, "SetupEventList is not received. Ignoring the event: " + event);
