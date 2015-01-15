@@ -40,6 +40,7 @@ import android.graphics.BitmapFactory;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.ProxyInfo;
 import android.net.Uri;
 import android.os.AsyncResult;
 import android.os.Bundle;
@@ -52,6 +53,7 @@ import android.os.RemoteException;
 import android.provider.Browser;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -182,6 +184,8 @@ public class StkAppService extends Service implements Runnable {
     private IActivityManager mActivityManager = null;
     private boolean mIsActiveProcessObs = false;
     private boolean mIsWaitingForProcessToActive = false;
+    private ProxyInfo mGlobalProxy = null;
+    private boolean mIsGlobalProxyUpdated;
 
     // Used for setting FLAG_ACTIVITY_NO_USER_ACTION when
     // creating an intent.
@@ -286,6 +290,15 @@ public class StkAppService extends Service implements Runnable {
                         || ActivityManager.PROCESS_STATE_SERVICE == procState
                         || ActivityManager.PROCESS_STATE_CACHED_ACTIVITY_CLIENT == procState)
                         && !mIsWaitingForProcessToActive) {
+
+                    if (mIsGlobalProxyUpdated) {
+                        ConnectivityManager cm = (ConnectivityManager) getSystemService(
+                                Context.CONNECTIVITY_SERVICE);
+                        if (cm != null) {
+                            cm.setGlobalProxy(mGlobalProxy);
+                        }
+                    }
+
                     for (int slot = 0; slot < mSimCount; slot++) {
                         if (mStkContext[slot] != null) {
                             if (mStkContext[slot].mSetupEventListSettings != null) {
@@ -1646,7 +1659,12 @@ public class StkAppService extends Service implements Runnable {
     }
 
     private void launchBrowser(BrowserSettings settings) {
-        if (settings == null) {
+
+        ConnectivityManager connMgr = (ConnectivityManager) mContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
+
+        if (settings == null || connMgr == null) {
+            CatLog.d(this, "settings or connection manager null");
             return;
         }
 
@@ -1672,6 +1690,13 @@ public class StkAppService extends Service implements Runnable {
             CatLog.d(LOG_TAG, "launch browser with default URL ");
             intent = Intent.makeMainSelectorActivity(Intent.ACTION_MAIN,
                     Intent.CATEGORY_APP_BROWSER);
+        }
+
+        if (connMgr != null && !TextUtils.isEmpty(settings.proxy)) {
+            ProxyInfo proxyInfo = getProxy(settings.proxy);
+            mGlobalProxy = connMgr.getGlobalProxy();
+            connMgr.setGlobalProxy(proxyInfo);
+            mIsGlobalProxyUpdated = true;
         }
 
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -1907,5 +1932,22 @@ public class StkAppService extends Service implements Runnable {
         Toast toast = Toast.makeText(sInstance, alphaString, Toast.LENGTH_LONG);
         toast.setGravity(Gravity.TOP, 0, 0);
         toast.show();
+    }
+
+    private ProxyInfo getProxy(String proxy) {
+        String host = proxy;
+        int port = 80;
+        if (proxy.contains(":")) {
+            String[] array = proxy.split(":");
+            if (array.length >= 2) {
+                host = array[0];
+                try {
+                    port = Integer.valueOf(array[1]);
+                } catch (NumberFormatException ex) {
+                    // default http port value of 80 used
+                }
+            }
+        }
+        return ProxyInfo.buildDirectProxy(host, port);
     }
 }
