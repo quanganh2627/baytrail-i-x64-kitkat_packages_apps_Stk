@@ -284,11 +284,6 @@ public class StkAppService extends Service implements Runnable {
         final IntentFilter intentFilter = new IntentFilter();
         intentFilter.addAction(ACTION_RIL_SWITCHING);
         registerReceiver(mBroadcastReceiver, intentFilter);
-        final IntentFilter stkCmdFilter = new IntentFilter();
-        stkCmdFilter.addAction(AppInterface.CAT_CMD_ACTION);
-        stkCmdFilter.addAction(AppInterface.CAT_SESSION_END_ACTION);
-        stkCmdFilter.addAction(AppInterface.USER_ACTIVITY_AVAILABLE_ACTION);
-        registerReceiver(mStkCmdReceiver, stkCmdFilter);
 
         mActivityManager = ActivityManagerNative.getDefault();
     }
