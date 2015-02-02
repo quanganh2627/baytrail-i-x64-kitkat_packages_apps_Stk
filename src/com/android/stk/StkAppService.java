@@ -215,7 +215,6 @@ public class StkAppService extends Service implements Runnable {
         }
     };
 
-    private BroadcastReceiver mStkCmdReceiver = new StkCmdReceiver();
     private boolean mAllAppsShown = false;
     private BroadcastReceiver mBroadcastReceiver = new BroadcastReceiver() {
         public void onReceive(Context context, Intent intent) {
@@ -340,7 +339,6 @@ public class StkAppService extends Service implements Runnable {
         waitForLooper();
         mServiceLooper.quit();
         unregisterReceiver(mBroadcastReceiver);
-        unregisterReceiver(mStkCmdReceiver);
         unregisterProcessObserverIfNotNeeded();
     }
 
