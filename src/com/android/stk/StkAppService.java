@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Intel Mobile Communications GmbH
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +19,10 @@ package com.android.stk;
 
 import android.app.ActivityManager;
 import android.app.ActivityManager.RunningTaskInfo;
+import android.app.ActivityManagerNative;
 import android.app.AlertDialog;
+import android.app.IActivityManager;
+import android.app.IProcessObserver;
 import android.app.Notification;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -33,15 +37,23 @@ import android.content.Intent;
 import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
+import android.net.NetworkInfo;
+import android.net.ProxyInfo;
 import android.net.Uri;
+import android.os.AsyncResult;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
 import android.os.Message;
 import android.os.PowerManager;
+import android.os.RemoteException;
+import android.provider.Browser;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -61,12 +73,15 @@ import com.android.internal.telephony.cat.LaunchBrowserMode;
 import com.android.internal.telephony.cat.Menu;
 import com.android.internal.telephony.cat.Item;
 import com.android.internal.telephony.cat.Input;
+import com.android.internal.telephony.cat.ResultAddInfoForLaunchBrowser;
 import com.android.internal.telephony.cat.ResultCode;
 import com.android.internal.telephony.cat.CatCmdMessage;
 import com.android.internal.telephony.cat.CatCmdMessage.BrowserSettings;
+import com.android.internal.telephony.cat.CatNetworkConnManager;
 import com.android.internal.telephony.cat.CatCmdMessage.SetupEventListSettings;
 import com.android.internal.telephony.cat.CatLog;
 import com.android.internal.telephony.cat.CatResponseMessage;
+import com.android.internal.telephony.cat.ComprehensionTlvTag;
 import com.android.internal.telephony.cat.TextMessage;
 import com.android.internal.telephony.uicc.IccRefreshResponse;
 import com.android.internal.telephony.uicc.IccCardStatus.CardState;
@@ -81,6 +96,8 @@ import java.util.LinkedList;
 import java.lang.System;
 import java.util.List;
 
+import static com.android.internal.telephony.cat.CatCmdMessage.
+                   SetupEventListConstants.BROWSER_TERMINATION_EVENT;
 import static com.android.internal.telephony.cat.CatCmdMessage.
                    SetupEventListConstants.IDLE_SCREEN_AVAILABLE_EVENT;
 import static com.android.internal.telephony.cat.CatCmdMessage.
@@ -161,6 +178,14 @@ public class StkAppService extends Service implements Runnable {
     private int mSimCount = 0;
     private PowerManager mPowerManager = null;
     private StkCmdReceiver mStkCmdReceiver = null;
+
+    private CatNetworkConnManager mConnManager = null;
+    private volatile NetworkRequestHandler mNetworkHandler = null;
+    private IActivityManager mActivityManager = null;
+    private boolean mIsActiveProcessObs = false;
+    private boolean mIsWaitingForProcessToActive = false;
+    private ProxyInfo mGlobalProxy = null;
+    private boolean mIsGlobalProxyUpdated;
 
     // Used for setting FLAG_ACTIVITY_NO_USER_ACTION when
     // creating an intent.
@@ -249,6 +274,83 @@ public class StkAppService extends Service implements Runnable {
         }
     }
 
+    private IProcessObserver mProcessObserver = new IProcessObserver.Stub() {
+        @Override
+        public void onForegroundActivitiesChanged(int pid, int uid, boolean foregroundActivities) {
+        }
+
+        @Override
+        public void onProcessStateChanged(int pid, int uid, int procState) {
+            String appName = mContext.getPackageManager().getNameForUid(uid);
+            // The browser app must be present in the system as com.android.browser
+            // or com.android.chrome. Note: Needs to be modified to work with other browsers.
+            if ((appName.contains("com.android.browser")
+                    || appName.contains("com.android.chrome"))) {
+                if ((ActivityManager.PROCESS_STATE_CACHED_EMPTY == procState
+                        || ActivityManager.PROCESS_STATE_SERVICE == procState
+                        || ActivityManager.PROCESS_STATE_CACHED_ACTIVITY_CLIENT == procState)
+                        && !mIsWaitingForProcessToActive) {
+
+                    if (mIsGlobalProxyUpdated) {
+                        ConnectivityManager cm = (ConnectivityManager) getSystemService(
+                                Context.CONNECTIVITY_SERVICE);
+                        if (cm != null) {
+                            cm.setGlobalProxy(mGlobalProxy);
+                        }
+                    }
+
+                    for (int slot = 0; slot < mSimCount; slot++) {
+                        if (mStkContext[slot] != null) {
+                            if (mStkContext[slot].mSetupEventListSettings != null) {
+                                for (int i : mStkContext[slot].mSetupEventListSettings.eventList) {
+                                    if (BROWSER_TERMINATION_EVENT == i) {
+                                        sendBrowserTerminationEvent(slot);
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else if (ActivityManager.PROCESS_STATE_TOP == procState
+                        && mIsWaitingForProcessToActive) {
+                    mIsWaitingForProcessToActive = false;
+                }
+            }
+        }
+
+        @Override
+        public void onProcessDied(int pid, int uid) {
+        }
+    };
+    private final class NetworkRequestHandler extends Handler {
+
+        private int mSlotId;
+        public void setSlotId(int id) {
+            mSlotId = id;
+        }
+        @Override
+        public void handleMessage(Message msg) {
+            CatResponseMessage resMsg = (CatResponseMessage)(AsyncResult.forMessage(msg)).userObj;
+            switch (msg.what) {
+                case CatNetworkConnManager.MSG_ID_NETWORK_REQUEST_SUCCESS:
+                    mStkContext[mSlotId].mCmdInProgress = false;
+                    mStkService[mSlotId].onCmdResponse(resMsg);
+                    break;
+                case CatNetworkConnManager.MSG_ID_NETWORK_REQUEST_FAILED:
+                    mStkContext[mSlotId].mCmdInProgress = false;
+                    mStkContext[mSlotId].launchBrowser = false;
+                    mStkContext[mSlotId].mBrowserSettings = null;
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(
+                            ResultAddInfoForLaunchBrowser.BEARER_UNAVAILABLE.value());
+                    mStkService[mSlotId].onCmdResponse(resMsg);
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     @Override
     public void onCreate() {
         CatLog.d(LOG_TAG, "onCreate()+");
@@ -274,6 +376,9 @@ public class StkAppService extends Service implements Runnable {
         serviceThread.start();
         mNotificationManager = (NotificationManager) mContext
                 .getSystemService(Context.NOTIFICATION_SERVICE);
+        mConnManager = CatNetworkConnManager.getInstance(mContext);
+        mNetworkHandler = new NetworkRequestHandler();
+        mActivityManager = ActivityManagerNative.getDefault();
         sInstance = this;
     }
 
@@ -350,6 +455,13 @@ public class StkAppService extends Service implements Runnable {
     @Override
     public void onDestroy() {
         CatLog.d(LOG_TAG, "onDestroy()");
+        if (mIsActiveProcessObs) {
+            try {
+                mActivityManager.unregisterProcessObserver(mProcessObserver);
+                mIsActiveProcessObs = false;
+            } catch (RemoteException e) {
+            }
+        }
         if (mStkCmdReceiver != null) {
             unregisterReceiver(mStkCmdReceiver);
             mStkCmdReceiver = null;
@@ -369,7 +481,6 @@ public class StkAppService extends Service implements Runnable {
 
         mServiceLooper = Looper.myLooper();
         mServiceHandler = new ServiceHandler();
-
         Looper.loop();
     }
 
@@ -595,6 +706,7 @@ public class StkAppService extends Service implements Runnable {
             CatLog.d(LOG_TAG, "CardStatus: " + cardStatus);
             if (cardStatus == false) {
                 CatLog.d(LOG_TAG, "CARD is ABSENT");
+                unregisterProcessObserver(slotId);
                 // Uninstall STKAPP, Clear Idle text, Stop StkAppService
                 mNotificationManager.cancel(getNotificationId(slotId));
                 if (isAllOtherCardsAbsent(slotId)) {
@@ -611,6 +723,7 @@ public class StkAppService extends Service implements Runnable {
                     (state.refreshResult == IccRefreshResponse.REFRESH_RESULT_RESET)) {
                     // Clear Idle Text
                     mNotificationManager.cancel(getNotificationId(slotId));
+                    unregisterProcessObserver(slotId);
                 }
 
                 if (state.refreshResult == IccRefreshResponse.REFRESH_RESULT_RESET) {
@@ -909,7 +1022,35 @@ public class StkAppService extends Service implements Runnable {
             launchEventMessage(slotId);
             break;
         case LAUNCH_BROWSER:
-            launchConfirmationDialog(mStkContext[slotId].mCurrentCmd.geTextMessage(), slotId);
+            /* Per 3GPP specification 102.223 the terminal shall ask
+             * the user for confirmation if the alpha identifier is
+             * present and if the launch browser command requests the
+             * existing browser session connected to a new URL.
+             *
+             * As we support tabulation, we ask the user for confirmation
+             * only if the alpha identifier is present.
+             */
+            if (mStkContext[slotId].mCurrentCmd.geTextMessage().text != null) {
+                launchConfirmationDialog(mStkContext[slotId].mCurrentCmd.geTextMessage(), slotId);
+            } else {
+                CatResponseMessage resMsg =
+                        new CatResponseMessage(mStkContext[slotId].mCurrentCmd);
+                resMsg.setConfirmation(true);
+                resMsg.setResultCode(ResultCode.OK);
+                mStkContext[slotId].launchBrowser = true;
+                mStkContext[slotId].mBrowserSettings
+                        = mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                if (startNetworkConnection(resMsg, slotId) == false) {
+                    mStkContext[slotId].mCmdInProgress = false;
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(
+                            ResultAddInfoForLaunchBrowser.BEARER_UNAVAILABLE.value());
+                    mStkService[slotId].onCmdResponse(resMsg);
+                } else {
+                    CatLog.d(this, "Waiting for network connection");
+                }
+                return;
+            }
             break;
         case SET_UP_CALL:
             TextMessage mesg = mStkContext[slotId].mCurrentCmd.getCallSettings().confirmMsg;
@@ -957,6 +1098,10 @@ public class StkAppService extends Service implements Runnable {
                 CatLog.d(this," Check if IDLE_SCREEN_AVAILABLE_EVENT is present in List");
                 checkForSetupEvent(IDLE_SCREEN_AVAILABLE_EVENT, null, slotId);
             }
+            if (!mIsActiveProcessObs) {
+                CatLog.d(this," Check if BROWSER_TERMINATION_EVENT is present in List");
+                checkForSetupEvent(BROWSER_TERMINATION_EVENT, null, slotId);
+            }
             break;
         }
 
@@ -966,6 +1111,20 @@ public class StkAppService extends Service implements Runnable {
             } else {
                 mStkContext[slotId].mCmdInProgress = false;
             }
+        }
+    }
+
+    private boolean startNetworkConnection(Object response, int slotId) {
+        if (mConnManager != null && mNetworkHandler != null) {
+            mNetworkHandler.setSlotId(slotId);
+            mConnManager.buildNetworkRequest(
+                    NetworkCapabilities.TRANSPORT_CELLULAR,
+                    NetworkCapabilities.NET_CAPABILITY_INTERNET);
+            mConnManager.acquireNetworkAsync(mNetworkHandler, response, true);
+            return true;
+        } else {
+            CatLog.d(this, "LAUNCH_BROWSER: startNetworkConnection Failed");
+            return false;
         }
     }
 
@@ -1035,12 +1194,23 @@ public class StkAppService extends Service implements Runnable {
                     : ResultCode.UICC_SESSION_TERM_BY_USER);
                 break;
             case LAUNCH_BROWSER:
+                resMsg.setConfirmation(confirmed);
                 resMsg.setResultCode(confirmed ? ResultCode.OK
                         : ResultCode.UICC_SESSION_TERM_BY_USER);
-                if (confirmed) {
-                    mStkContext[slotId].launchBrowser = true;
-                    mStkContext[slotId].mBrowserSettings =
-                            mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                // start the connection here
+                if( startNetworkConnection(resMsg, slotId) != true) {
+                    // overwrite the res code
+                    resMsg.setResultCode(ResultCode.LAUNCH_BROWSER_ERROR);
+                    resMsg.setAdditionalInfo(
+                             ResultAddInfoForLaunchBrowser.BEARER_UNAVAILABLE.value());
+                } else {
+                    if (confirmed) {
+                        mStkContext[slotId].launchBrowser = true;
+                        mStkContext[slotId].mBrowserSettings =
+                                mStkContext[slotId].mCurrentCmd.getBrowserSettings();
+                    }
+                    CatLog.d(this, "LAUNCH_BROWSER: Waiting network connection");
+                    return;
                 }
                 break;
             case SET_UP_CALL:
@@ -1052,6 +1222,10 @@ public class StkAppService extends Service implements Runnable {
                     launchEventMessage(slotId,
                             mStkContext[slotId].mCurrentCmd.getCallSettings().callMsg);
                 }
+                break;
+            case OPEN_CHANNEL:
+                resMsg.setResultCode(confirmed ? ResultCode.OK : ResultCode.USER_NOT_ACCEPT);
+                resMsg.setConfirmation(confirmed);
                 break;
             }
             break;
@@ -1322,10 +1496,35 @@ public class StkAppService extends Service implements Runnable {
         mStkService[slotId].onCmdResponse(resMsg);
     }
 
+    private void unregisterProcessObserver(int slotId) {
+        if (mStkContext[slotId].mSetupEventListSettings != null) {
+            for (int i : mStkContext[slotId].mSetupEventListSettings.eventList) {
+                if ((BROWSER_TERMINATION_EVENT == i) && mIsActiveProcessObs) {
+                    try {
+                        mActivityManager.unregisterProcessObserver(mProcessObserver);
+                        mIsActiveProcessObs = false;
+                    } catch (RemoteException e) {
+                        CatLog.d(this, "Error unregistering ProcessObserver");
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    private void sendBrowserTerminationEvent(int slotId) {
+        byte[] additionalInfo = {
+                (byte)ComprehensionTlvTag.BROWSER_TERMINATION_CAUSE.value(),
+                0x01, // length
+                0x00 // user termination
+                };
+        sendSetUpEventResponse(BROWSER_TERMINATION_EVENT, additionalInfo, slotId);
+    }
+
     private void checkForSetupEvent(int event, Bundle args, int slotId) {
         boolean eventPresent = false;
         byte[] addedInfo = null;
-        CatLog.d(this, "Event :" + event);
+        CatLog.d(this, "Event :" + event + " ActiveProcessObs: " + mIsActiveProcessObs);
 
         if (mStkContext[slotId].mSetupEventListSettings != null) {
             /* Checks if the event is present in the EventList updated by last
@@ -1356,11 +1555,33 @@ public class StkAppService extends Service implements Runnable {
                         addedInfo = GsmAlphabet.stringToGsm8BitPacked(language);
                         sendSetUpEventResponse(event, addedInfo, slotId);
                         break;
+                    case BROWSER_TERMINATION_EVENT:
+                        if (!mIsActiveProcessObs) {
+                            try {
+                                mActivityManager.registerProcessObserver(mProcessObserver);
+                                mIsActiveProcessObs = true;
+                            } catch(RemoteException e) {
+                                CatLog.d(this, "Error registering/unregistering ProcessObserver");
+                            }
+                        }
+                        break;
                     default:
                         break;
                 }
             } else {
                 CatLog.e(this, " Event does not exist in the EventList");
+                switch (event) {
+                    case BROWSER_TERMINATION_EVENT:
+                        if (mIsActiveProcessObs) {
+                            try {
+                                mActivityManager.unregisterProcessObserver(mProcessObserver);
+                                mIsActiveProcessObs = false;
+                            } catch (RemoteException e) {
+                                CatLog.d(this, "Error registering/unregistering ProcessObserver");
+                            }
+                        }
+                        break;
+                }
             }
         } else {
             CatLog.e(this, "SetupEventList is not received. Ignoring the event: " + event);
@@ -1438,7 +1659,12 @@ public class StkAppService extends Service implements Runnable {
     }
 
     private void launchBrowser(BrowserSettings settings) {
-        if (settings == null) {
+
+        ConnectivityManager connMgr = (ConnectivityManager) mContext
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
+
+        if (settings == null || connMgr == null) {
+            CatLog.d(this, "settings or connection manager null");
             return;
         }
 
@@ -1466,6 +1692,13 @@ public class StkAppService extends Service implements Runnable {
                     Intent.CATEGORY_APP_BROWSER);
         }
 
+        if (connMgr != null && !TextUtils.isEmpty(settings.proxy)) {
+            ProxyInfo proxyInfo = getProxy(settings.proxy);
+            mGlobalProxy = connMgr.getGlobalProxy();
+            connMgr.setGlobalProxy(proxyInfo);
+            mIsGlobalProxyUpdated = true;
+        }
+
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         switch (settings.mode) {
         case USE_EXISTING_BROWSER:
@@ -1476,6 +1709,7 @@ public class StkAppService extends Service implements Runnable {
             break;
         case LAUNCH_IF_NOT_ALREADY_LAUNCHED:
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            intent.putExtra(Browser.EXTRA_CREATE_NEW_TAB, true);
             break;
         }
         // start browser activity
@@ -1531,7 +1765,15 @@ public class StkAppService extends Service implements Runnable {
             }
             notificationBuilder.setColor(mContext.getResources().getColor(
                     com.android.internal.R.color.system_notification_accent_color));
-            mNotificationManager.notify(getNotificationId(slotId), notificationBuilder.build());
+
+            Notification.BigTextStyle notifBigTextStyle =
+                    new Notification.BigTextStyle(notificationBuilder);
+            if (notifBigTextStyle != null) {
+                notifBigTextStyle.bigText(msg.text);
+                mNotificationManager.notify(getNotificationId(slotId), notifBigTextStyle.build());
+            } else {
+                mNotificationManager.notify(getNotificationId(slotId), notificationBuilder.build());
+            }
         }
     }
 
@@ -1690,5 +1932,22 @@ public class StkAppService extends Service implements Runnable {
         Toast toast = Toast.makeText(sInstance, alphaString, Toast.LENGTH_LONG);
         toast.setGravity(Gravity.TOP, 0, 0);
         toast.show();
+    }
+
+    private ProxyInfo getProxy(String proxy) {
+        String host = proxy;
+        int port = 80;
+        if (proxy.contains(":")) {
+            String[] array = proxy.split(":");
+            if (array.length >= 2) {
+                host = array[0];
+                try {
+                    port = Integer.valueOf(array[1]);
+                } catch (NumberFormatException ex) {
+                    // default http port value of 80 used
+                }
+            }
+        }
+        return ProxyInfo.buildDirectProxy(host, port);
     }
 }

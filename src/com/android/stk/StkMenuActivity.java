@@ -1,4 +1,5 @@
 /*
+ * Copyright (C) 2015 Intel Mobile Communications GmbH
  * Copyright (C) 2007 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +17,7 @@
 
 package com.android.stk;
 
+import android.app.ActionBar;
 import android.app.ListActivity;
 import android.app.Activity;
 import android.content.Context;
@@ -99,11 +101,19 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         super.onCreate(icicle);
 
         CatLog.d(LOG_TAG, "onCreate");
-        // Remove the default title, customized one is used.
-        requestWindowFeature(Window.FEATURE_NO_TITLE);
         // Set the layout for this activity.
         setContentView(R.layout.stk_menu_list);
         mInstance = this;
+        // Hide default title and icon, customized one is used
+        ActionBar actionBar = getActionBar();
+        if (actionBar != null) {
+            CatLog.d(LOG_TAG, "onCreate: setting action bar title and icon");
+            actionBar.setDisplayShowTitleEnabled(false);
+            actionBar.setDisplayShowHomeEnabled(false);
+        } else {
+            CatLog.d(LOG_TAG, "onCreate: Action bar null");
+        }
+
         mTitleTextView = (TextView) findViewById(R.id.title_text);
         mTitleIconView = (ImageView) findViewById(R.id.title_icon);
         mProgressView = (ProgressBar) findViewById(R.id.progress_bar);
@@ -111,6 +121,7 @@ public class StkMenuActivity extends ListActivity implements View.OnCreateContex
         mAcceptUsersInput = true;
         getListView().setOnCreateContextMenuListener(this);
         initFromIntent(getIntent());
+        invalidateOptionsMenu();
     }
 
     @Override
