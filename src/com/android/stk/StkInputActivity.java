@@ -140,7 +140,7 @@ public class StkInputActivity extends Activity implements View.OnClickListener,
         CatLog.d(LOG_TAG, "onCreate - mIsResponseSent[" + mIsResponseSent + "]");
 
         // Set the layout for this activity.
-        requestWindowFeature(Window.FEATURE_LEFT_ICON);
+        //requestWindowFeature(Window.FEATURE_LEFT_ICON);
         setContentView(R.layout.stk_input);
 
         // Initialize members
