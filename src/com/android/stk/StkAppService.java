@@ -67,6 +67,9 @@ import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager.NameNotFoundException;
+import android.content.pm.PackageManager;
+import android.content.pm.ActivityInfo;
+import android.content.pm.ResolveInfo;
 
 import com.android.internal.telephony.cat.AppInterface;
 import com.android.internal.telephony.cat.LaunchBrowserMode;
@@ -762,7 +765,43 @@ public class StkAppService extends Service implements Runnable {
      * that the screen is idle.
      */
     private boolean isScreenIdle() {
-        return (!mPowerManager.isInteractive());
+//        return (!mPowerManager.isInteractive());
+        ActivityManager am = (ActivityManager)mContext
+                .getSystemService(Activity.ACTIVITY_SERVICE);
+        boolean screenAvailable = false;
+
+        CatLog.d(this, "check isScreenAvailable");
+
+        if (am == null) {
+            CatLog.e(this, "isScreenIdle ActivityManager null");
+            return screenAvailable;
+        }
+
+        List<RunningTaskInfo> tasks = am.getRunningTasks(1);
+        if (tasks != null && tasks.size() > 0) {
+            String packName = tasks.get(0).topActivity.getPackageName();
+            if (packName.equals(PACKAGE_NAME)) {
+                screenAvailable = true;
+                CatLog.d(this, "stk on top");
+            } else {
+                PackageManager pm = getPackageManager();
+                Intent homeIntent = new Intent(Intent.ACTION_MAIN, null);
+                homeIntent.addCategory(Intent.CATEGORY_HOME);
+                List<ResolveInfo> mApps;
+                mApps = pm.queryIntentActivities(homeIntent, 0);
+
+                for (ResolveInfo info : mApps) {
+                    ActivityInfo activity = info.activityInfo;
+                    if (activity.packageName.equals(packName)) {
+                        screenAvailable = true;
+                        CatLog.d(this, "home on top");
+                        break;
+                    }
+                }
+            }
+        }
+        CatLog.d(this, "screen available: "+screenAvailable);
+        return screenAvailable;
     }
 
     private void handleIdleScreen(int slotId) {
